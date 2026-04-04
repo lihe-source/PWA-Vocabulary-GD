@@ -1,6 +1,6 @@
 // ===========================
-// 英文單字複習 PWA - app.js V1_0
-// 更新：Firebase → Google Drive 雲端備份，設定頁增加 OAuth Client ID / Folder ID 輸入
+// 英文單字複習 PWA - app.js V5_0
+// 更新：設定頁重整，備份清單顯示資料統計，版本號顯示於設定頁底部
 // ===========================
 
   // Listen for SW_UPDATED message → prompt user to refresh
@@ -1131,7 +1131,14 @@ const GDrive = {
     const ts       = new Date().toISOString().replace(/[:.]/g, '-');
     const fileName = 'vocab_backup_' + ts + '.json';
     const boundary = 'vocab_boundary_' + Date.now();
-    const metadata = { name: fileName, mimeType: 'application/json', ...(folderId ? { parents: [folderId] } : {}) };
+    const summary  = {
+      words:     (data.words||[]).length,
+      sentences: [...(data.sentences||[]), ...(data.imported||[])].length,
+      stats:     (data.history||[]).length,
+      essay:     (data.essayHistory||[]).reduce((s,h)=>s+(h.sessions||[]).length,0),
+      aiAsk:     (data.aiAskHistory||[]).length
+    };
+    const metadata = { name: fileName, mimeType: 'application/json', description: JSON.stringify(summary), ...(folderId ? { parents: [folderId] } : {}) };
     const body = '--' + boundary + '\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n'
       + JSON.stringify(metadata) + '\r\n--' + boundary + '\r\nContent-Type: application/json\r\n\r\n'
       + JSON.stringify(data) + '\r\n--' + boundary + '--';
@@ -1155,7 +1162,7 @@ const GDrive = {
     const folderId = DB.getGDriveFolderId();
     let q = "name contains 'vocab_backup_' and mimeType='application/json' and trashed=false";
     if (folderId) q += " and '" + folderId + "' in parents";
-    const params = new URLSearchParams({ q, fields: 'files(id,name,createdTime)', orderBy: 'createdTime desc', pageSize: '10' });
+    const params = new URLSearchParams({ q, fields: 'files(id,name,createdTime,description)', orderBy: 'createdTime desc', pageSize: '10' });
     const r = await fetch('https://www.googleapis.com/drive/v3/files?' + params, {
       headers: { Authorization: 'Bearer ' + this._token }
     });
@@ -3576,27 +3583,6 @@ Views.settings = {
     const svgUp = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" style="width:14px;height:14px"><polyline points="16 16 12 12 8 16"/><line x1="12" y1="12" x2="12" y2="21"/><path d="M20.39 18.39A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.3"/></svg>';
     const svgDn = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" style="width:14px;height:14px"><polyline points="8 17 12 21 16 17"/><line x1="12" y1="12" x2="12" y2="21"/><path d="M20.88 18.09A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.3"/></svg>';
 
-    const gdriveSyncHtml = signedIn
-      ? `<div class="fb-status-row">
-          <div class="fb-status-dot connected"></div>
-          <span class="fb-status-text">已登入：${email}</span>
-        </div>
-        ${lastSync ? '<div class="fb-last-sync" style="margin-bottom:10px">上次備份：' + lastSync + '</div>' : ''}
-        <div class="settings-btn-row" style="margin-bottom:10px">
-          <button class="btn-fb-upload" id="gd-upload-btn" style="flex:1">${svgUp} 上傳備份</button>
-          <button class="btn-fb-download" id="gd-download-btn" style="flex:1">${svgDn} 還原備份</button>
-        </div>
-        <label class="fb-auto-sync-row">
-          <input type="checkbox" id="gd-auto-sync"${autoSync ? ' checked' : ''}>
-          <span>每次開啟 APP 自動備份</span>
-        </label>`
-      : `<div class="fb-status-row" style="margin-bottom:8px">
-          <div class="fb-status-dot disconnected"></div>
-          <span class="fb-status-text">${clientId ? '尚未登入 Google' : '請先填入 OAuth Client ID'}</span>
-        </div>
-        ${clientId ? '<button class="btn-fb-signin" id="gd-signin-btn" style="width:100%;padding:9px 12px;font-size:13px">' + svgG + ' 使用 Google 帳號登入</button>' : ''}
-        <div class="settings-tip" style="margin-top:8px;margin-bottom:0">登入後可將資料備份至 Google Drive。</div>`;
-
     const importedSentences = DB.getImportedSentences();
     const aiSentences       = DB.getSentenceLog();
     const totalSentences    = DB.getCombinedSentenceLog().length;
@@ -3611,68 +3597,41 @@ Views.settings = {
       <div class="section-header"><h1 class="section-title">設定</h1></div>
       <div class="settings-wrap">
 
-        <!-- 1. API 金鑰設定 -->
-        <div class="settings-section-label">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:15px;height:15px"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg>
-          API 金鑰設定
-        </div>
-        <div class="settings-card">
-          <div class="api-subsection-label">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" style="width:13px;height:13px"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
-            Gemini AI（單字查詢 ／ 例句生成）
-          </div>
-          <div class="key-status" style="margin-bottom:6px">
-            <div class="key-status-dot ${hasKey?'saved':'unsaved'}"></div>
-            <span>${hasKey?'已儲存 Gemini Key':'尚未設定 Gemini Key'}</span>
-          </div>
-          <div class="form-group">
-            <div class="input-with-toggle">
-              <input type="password" class="form-input" id="api-key-input" value="${savedKey}" placeholder="AIza...（Google AI Studio）">
-              <button class="toggle-visibility" id="toggle-vis"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg></button>
-            </div>
-          </div>
-          <div class="settings-btn-row">
-            <button class="btn-primary" id="save-key-btn" style="flex:1">儲存</button>
-            ${hasKey?'<button class="btn-secondary" id="clear-key-btn" style="flex:1">清除</button>':''}
-          </div>
-          <div class="model-dropdown-row">
-            <label class="model-dropdown-label">AI 模型</label>
-            <select class="model-dropdown-select" id="gemini-model-select">
-              ${Gemini.AVAILABLE_MODELS.map(m =>
-                `<option value="${m.id}" ${savedModel===m.id?'selected':''}>${m.label}${m.tag?' ★':''}</option>`
-              ).join('')}
-            </select>
-          </div>
-          <a class="api-link" href="https://aistudio.google.com/app/apikey" target="_blank">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
-            取得 Gemini Key（Google AI Studio）
-          </a>
-          <div class="settings-tip" style="margin-bottom:0">免費方案每天有配額限制，每日例句每天只生成一次以節省配額。所有 Key 僅儲存於本機裝置。</div>
-        </div>
-
-        <!-- 2. Google Drive 備份 -->
-        <div class="settings-section-label" style="margin-top:16px">
+        <!-- ★ 1. Google Drive 同步狀態（最上方） -->
+        <div class="settings-section-label" style="margin-top:0">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:15px;height:15px"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
           Google Drive 雲端備份
         </div>
         <div class="settings-card">
-          <div class="api-subsection-label" style="margin-bottom:4px">OAuth Client ID</div>
-          <div class="form-group" style="margin-bottom:8px">
-            <input type="text" class="form-input" id="gd-client-id-input" value="${clientId}" placeholder="xxxxxx.apps.googleusercontent.com" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
-          </div>
-          <div class="api-subsection-label" style="margin-bottom:4px">Google Drive 資料夾 ID（選填）</div>
-          <div class="form-group" style="margin-bottom:8px">
-            <input type="text" class="form-input" id="gd-folder-id-input" value="${folderId}" placeholder="留空則儲存到 Drive 根目錄" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
-          </div>
-          <div class="settings-btn-row" style="margin-bottom:10px">
-            <button class="btn-primary" id="gd-save-cfg-btn" style="flex:1">儲存設定</button>
-          </div>
-          <div class="api-subsection-divider"></div>
-          ${gdriveSyncHtml}
-          ${signedIn ? '<button class="btn-fb-signout-bottom" id="gd-signout-btn" style="margin-top:10px"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:15px;height:15px"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg> 登出 Google（' + email + '）</button>' : ''}
-          <div class="settings-tip" style="margin-top:10px;margin-bottom:0">需在 Google Cloud Console 建立 OAuth 2.0 用戶端 ID（類型：網頁應用程式），並將本站網址加入授權來源。資料夾 ID 可從 Drive 資料夾網址中取得（/folders/ 後面的部分）。</div>
+          ${signedIn ? `
+            <div class="fb-status-row">
+              <div class="fb-status-dot connected"></div>
+              <span class="fb-status-text">已登入：${email}</span>
+            </div>
+            ${lastSync ? '<div class="fb-last-sync" style="margin-bottom:10px">上次備份：' + lastSync + '</div>' : ''}
+            <div class="settings-btn-row" style="margin-bottom:10px">
+              <button class="btn-fb-upload" id="gd-upload-btn" style="flex:1">${svgUp} 上傳備份</button>
+              <button class="btn-fb-download" id="gd-download-btn" style="flex:1">${svgDn} 還原備份</button>
+            </div>
+            <label class="fb-auto-sync-row">
+              <input type="checkbox" id="gd-auto-sync"${autoSync ? ' checked' : ''}>
+              <span>每次開啟 APP 自動備份</span>
+            </label>
+            <button class="btn-fb-signout-bottom" id="gd-signout-btn" style="margin-top:10px">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:15px;height:15px"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+              登出 Google（${email}）
+            </button>
+          ` : `
+            <div class="fb-status-row" style="margin-bottom:8px">
+              <div class="fb-status-dot disconnected"></div>
+              <span class="fb-status-text">${clientId ? '尚未登入 Google' : '請先在下方填入 OAuth Client ID'}</span>
+            </div>
+            ${clientId ? '<button class="btn-fb-signin" id="gd-signin-btn" style="width:100%;padding:9px 12px;font-size:13px">' + svgG + ' 使用 Google 帳號登入</button>' : ''}
+            <div class="settings-tip" style="margin-top:8px;margin-bottom:0">登入後可將資料備份至 Google Drive。設定請見下方。</div>
+          `}
         </div>
-        <!-- 3. 單字資料庫 -->
+
+        <!-- 2. 單字資料庫 -->
         <div class="settings-section-label" style="margin-top:16px">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:15px;height:15px"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>
           單字資料庫
@@ -3692,7 +3651,7 @@ Views.settings = {
           </div>
         </div>
 
-        <!-- 4. 每日例句 -->
+        <!-- 3. 每日例句 -->
         <div class="settings-section-label" style="margin-top:16px">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:15px;height:15px"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
           每日例句
@@ -3722,7 +3681,7 @@ Views.settings = {
           </div>
         </div>
 
-        <!-- 5. 練習統計 -->
+        <!-- 4. 練習統計 -->
         <div class="settings-section-label" style="margin-top:16px">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:15px;height:15px"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
           練習統計
@@ -3742,7 +3701,7 @@ Views.settings = {
           </div>
         </div>
 
-        <!-- 5b. 文章撰寫 -->
+        <!-- 4b. 文章撰寫 -->
         <div class="settings-section-label" style="margin-top:16px">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:15px;height:15px"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4 9.5-9.5z"/></svg>
           文章撰寫
@@ -3762,7 +3721,7 @@ Views.settings = {
           </div>
         </div>
 
-        <!-- 5c. AI 詢問 -->
+        <!-- 4c. AI 詢問 -->
         <div class="settings-section-label" style="margin-top:16px">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:15px;height:15px"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
           AI 詢問
@@ -3782,7 +3741,7 @@ Views.settings = {
           </div>
         </div>
 
-        <!-- 6. 一鍵匯出（最底部）-->
+        <!-- 5. 一鍵匯出（最底部）-->
         <div class="settings-section-label" style="margin-top:16px">
           <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" style="width:15px;height:15px"><rect x="2" y="2" width="20" height="20" rx="2" fill="#5b8dd9" stroke="#3a6bc4" stroke-width="1.5"/><rect x="6" y="2" width="12" height="8" rx="1" fill="#a8c4f0" stroke="#3a6bc4" stroke-width="1.2"/><rect x="9" y="3.5" width="4" height="5" rx="0.5" fill="#3a6bc4"/><rect x="4" y="13" width="16" height="7" rx="1" fill="#d6e8ff" stroke="#3a6bc4" stroke-width="1.2"/></svg>
           一鍵匯出全部
@@ -3792,28 +3751,23 @@ Views.settings = {
           <div class="one-click-summary-grid">
             <div class="oc-stat-cell">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>
-              <div class="oc-stat-num">${totalWords}</div>
-              <div class="oc-stat-label">單字</div>
+              <div class="oc-stat-num">${totalWords}</div><div class="oc-stat-label">單字</div>
             </div>
             <div class="oc-stat-cell">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
-              <div class="oc-stat-num">${totalSentences}</div>
-              <div class="oc-stat-label">例句</div>
+              <div class="oc-stat-num">${totalSentences}</div><div class="oc-stat-label">例句</div>
             </div>
             <div class="oc-stat-cell">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
-              <div class="oc-stat-num">${totalStats}</div>
-              <div class="oc-stat-label">統計</div>
+              <div class="oc-stat-num">${totalStats}</div><div class="oc-stat-label">統計</div>
             </div>
             <div class="oc-stat-cell">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4 9.5-9.5z"/></svg>
-              <div class="oc-stat-num">${totalEssay}</div>
-              <div class="oc-stat-label">文章</div>
+              <div class="oc-stat-num">${totalEssay}</div><div class="oc-stat-label">文章</div>
             </div>
             <div class="oc-stat-cell">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
-              <div class="oc-stat-num">${totalAiAsk}</div>
-              <div class="oc-stat-label">AI 詢問</div>
+              <div class="oc-stat-num">${totalAiAsk}</div><div class="oc-stat-label">AI 詢問</div>
             </div>
           </div>
           <button class="btn-one-click-export" id="one-click-export-btn">
@@ -3828,18 +3782,71 @@ Views.settings = {
           <div class="one-click-import-hint">可選取單字/例句/統計 CSV，或直接選取備份 ZIP 檔一鍵還原</div>
         </div>
 
-        <div style="height:20px"></div>
+        <!-- 6. Google Drive 設定（Client ID / Folder ID） -->
+        <div class="settings-section-label" style="margin-top:16px">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:15px;height:15px"><circle cx="12" cy="12" r="10"/><path d="M12 8v4l3 3"/></svg>
+          Google Drive 設定
+        </div>
+        <div class="settings-card">
+          <div class="api-subsection-label" style="margin-bottom:4px">OAuth Client ID</div>
+          <div class="form-group" style="margin-bottom:8px">
+            <input type="text" class="form-input" id="gd-client-id-input" value="${clientId}" placeholder="xxxxxx.apps.googleusercontent.com" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
+          </div>
+          <div class="api-subsection-label" style="margin-bottom:4px">Google Drive 資料夾 ID（選填）</div>
+          <div class="form-group" style="margin-bottom:8px">
+            <input type="text" class="form-input" id="gd-folder-id-input" value="${folderId}" placeholder="留空則儲存到 Drive 根目錄" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
+          </div>
+          <div class="settings-btn-row">
+            <button class="btn-primary" id="gd-save-cfg-btn" style="flex:1">儲存 Drive 設定</button>
+          </div>
+          <div class="settings-tip" style="margin-top:10px;margin-bottom:0">需在 Google Cloud Console 建立 OAuth 2.0 用戶端 ID（類型：網頁應用程式），並將本站網址加入授權來源。資料夾 ID 可從 Drive 資料夾網址中取得（/folders/ 後面的部分）。</div>
+        </div>
+
+        <!-- 7. Gemini API 金鑰設定 -->
+        <div class="settings-section-label" style="margin-top:16px">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:15px;height:15px"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg>
+          Gemini API 金鑰設定
+        </div>
+        <div class="settings-card">
+          <div class="key-status" style="margin-bottom:6px">
+            <div class="key-status-dot ${hasKey?'saved':'unsaved'}"></div>
+            <span>${hasKey?'已儲存 Gemini Key':'尚未設定 Gemini Key'}</span>
+          </div>
+          <div class="form-group">
+            <div class="input-with-toggle">
+              <input type="password" class="form-input" id="api-key-input" value="${savedKey}" placeholder="AIza...（Google AI Studio）">
+              <button class="toggle-visibility" id="toggle-vis"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg></button>
+            </div>
+          </div>
+          <div class="settings-btn-row">
+            <button class="btn-primary" id="save-key-btn" style="flex:1">儲存</button>
+            ${hasKey?'<button class="btn-secondary" id="clear-key-btn" style="flex:1">清除</button>':''}
+          </div>
+          <div class="model-dropdown-row">
+            <label class="model-dropdown-label">AI 模型</label>
+            <select class="model-dropdown-select" id="gemini-model-select">
+              ${Gemini.AVAILABLE_MODELS.map(m =>
+                `<option value="${m.id}" ${savedModel===m.id?'selected':''}>${m.label}${m.tag?' ★':''}</option>`
+              ).join('')}
+            </select>
+          </div>
+          <a class="api-link" href="https://aistudio.google.com/app/apikey" target="_blank">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+            取得 Gemini Key（Google AI Studio）
+          </a>
+          <div class="settings-tip" style="margin-bottom:0">免費方案每天有配額限制，每日例句每天只生成一次以節省配額。所有 Key 僅儲存於本機裝置。</div>
+        </div>
+
+        <!-- 版本號 -->
+        <div style="text-align:center;padding:16px 0 8px;color:var(--text-muted);font-size:12px;letter-spacing:0.5px">
+          英文單字複習 PWA &nbsp;·&nbsp; V5_0
+        </div>
+
+        <div style="height:12px"></div>
       </div>
 
       <input type="file" id="one-click-import-input" accept=".csv,.zip" multiple style="display:none">
     `;
-
-    // ── helpers ──
-    const downloadCSV = (csv, filename) => {
-      const blob = new Blob(['\uFEFF'+csv], {type:'text/csv;charset=utf-8;'});
-      const url = URL.createObjectURL(blob); const a = document.createElement('a');
-      a.href=url; a.download=filename; a.click(); URL.revokeObjectURL(url);
-    };
 
     // ── 1. API Key ──
     const input = document.getElementById('api-key-input');
@@ -4111,9 +4118,19 @@ Views.settings = {
         const rows = files.map((f, i) => {
           const ts  = f.createdTime ? new Date(f.createdTime).toLocaleString('zh-TW') : '—';
           const tag = i === 0 ? '<span style="font-size:10px;font-weight:800;color:var(--primary);background:color-mix(in srgb,var(--primary) 12%,transparent);padding:1px 6px;border-radius:10px;margin-left:6px">最新</span>' : '';
+          let meta = '';
+          try {
+            const sm = JSON.parse(f.description || '{}');
+            const parts = [];
+            if (sm.words     != null) parts.push('單字 ' + sm.words + ' 個');
+            if (sm.sentences != null) parts.push('例句 ' + sm.sentences + ' 筆');
+            if (sm.stats     != null) parts.push('統計 ' + sm.stats + ' 筆');
+            if (sm.essay     != null) parts.push('文章 ' + sm.essay + ' 篇');
+            meta = parts.join('・');
+          } catch {}
           return `<button class="fb-slot-btn" data-fid="${f.id}" style="width:100%;text-align:left;padding:10px 12px;border-radius:10px;border:1.5px solid var(--border);background:var(--bg);cursor:pointer;margin-bottom:6px">
             <div style="font-weight:700;font-size:13px;color:var(--text-primary)">${ts}${tag}</div>
-            <div style="font-size:11px;color:var(--text-secondary);margin-top:2px;word-break:break-all">${f.name}</div>
+            ${meta ? '<div style="font-size:12px;color:var(--primary);margin-top:2px">' + meta + '</div>' : ''}
           </button>`;
         }).join('');
         Modal.show(`<div class="modal-handle"></div>
@@ -4164,7 +4181,6 @@ Views.settings = {
     });
   }
 };
-
 // ===========================
 // INIT
 // ===========================
