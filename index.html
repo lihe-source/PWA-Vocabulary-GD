@@ -1,0 +1,395 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <meta name="theme-color" content="#101426">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="mobile-web-app-capable" content="yes">
+  <title>油耗保養管家</title>
+  <link rel="manifest" href="manifest.json">
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <script>
+    (function () {
+      if (localStorage.getItem('theme') === 'light') {
+        document.documentElement.classList.add('light-mode');
+      }
+    })();
+  </script>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="app">
+    <header id="app-header" class="glass">
+      <div class="header-main">
+        <div class="header-copy">
+          <p class="eyebrow">Vehicle Logbook</p>
+          <h1>油耗保養管家</h1>
+        </div>
+        <div class="header-actions">
+          <button id="theme-toggle" class="icon-btn" type="button" aria-label="切換主題">◐</button>
+          <div id="version-badge" class="version-badge">V1_5</div>
+        </div>
+      </div>
+    </header>
+
+    <main id="main-content">
+      <section id="view-dashboard" class="view active" data-view="dashboard">
+        <div class="content-scroll">
+          <section class="hero-card glass">
+            <div class="hero-top">
+              <div>
+                <p class="section-kicker">Dashboard</p>
+                <h2>總覽車況、即將到期保養與近期紀錄</h2>
+                <p class="muted">維持手機版型、滑動切頁、支援手動與自動雲端備份。</p>
+              </div>
+              <div class="hero-badges">
+                <span class="chip">PWA</span>
+                <span class="chip">IndexedDB</span>
+                <span class="chip">Google Drive</span>
+              </div>
+            </div>
+
+            <div class="hero-metrics">
+              <article class="metric-card">
+                <span class="metric-label">車輛總數</span>
+                <strong id="metric-vehicle-count">0</strong>
+              </article>
+              <article class="metric-card">
+                <span class="metric-label">本月紀錄</span>
+                <strong id="metric-record-count">0</strong>
+              </article>
+              <article class="metric-card">
+                <span class="metric-label">待處理保養</span>
+                <strong id="metric-due-count">0</strong>
+              </article>
+            </div>
+          </section>
+
+          <section class="section-block">
+            <div class="section-head">
+              <h3>保養提醒</h3>
+              <span class="section-tip">依車輛週期自動計算</span>
+            </div>
+            <div id="due-summary-list" class="stack-list"></div>
+          </section>
+
+          <section class="section-block">
+            <div class="section-head">
+              <h3>車輛狀態</h3>
+              <span class="section-tip">里程、最近油耗與保養計畫</span>
+            </div>
+            <div id="vehicle-list" class="vehicle-list"></div>
+          </section>
+
+          <section class="section-block">
+            <div class="section-head">
+              <h3>近期紀錄</h3>
+              <span class="section-tip">最近 8 筆</span>
+            </div>
+            <div id="recent-records" class="stack-list"></div>
+          </section>
+        </div>
+      </section>
+
+      <section id="view-add" class="view" data-view="add">
+        <div class="content-scroll">
+          <section class="section-block">
+            <div class="section-head">
+              <h3>新增油耗紀錄</h3>
+              <span class="section-tip">會自動更新最新總里程與 km/L</span>
+            </div>
+            <form id="fuel-form" class="card form-card">
+              <label class="field">
+                <span>車輛</span>
+                <select id="fuel-vehicle" class="form-input" required></select>
+              </label>
+              <label class="field">
+                <span>當下里程（km）</span>
+                <input id="fuel-odometer" class="form-input" type="number" min="0" step="0.1" inputmode="decimal" required>
+              </label>
+              <label class="field">
+                <span>加油公升數（L）</span>
+                <input id="fuel-liters" class="form-input" type="number" min="0" step="0.01" inputmode="decimal" required>
+              </label>
+              <label class="field">
+                <span>總金額</span>
+                <input id="fuel-cost" class="form-input" type="number" min="0" step="1" inputmode="numeric" required>
+              </label>
+              <button class="btn-primary" type="submit">儲存油耗紀錄</button>
+              <p class="hint-text">油耗 =（本次里程 - 上次加油里程）÷ 本次加油公升數</p>
+            </form>
+          </section>
+
+          <section class="section-block">
+            <div class="section-head">
+              <h3>新增保養紀錄</h3>
+              <span class="section-tip">若項目與保養週期相同，會自動推算下次到期里程</span>
+            </div>
+            <form id="maintenance-form" class="card form-card">
+              <label class="field">
+                <span>車輛</span>
+                <select id="maintenance-vehicle" class="form-input" required></select>
+              </label>
+              <label class="field">
+                <span>當下里程（km）</span>
+                <input id="maintenance-odometer" class="form-input" type="number" min="0" step="0.1" inputmode="decimal" required>
+              </label>
+              <label class="field">
+                <span>保養項目</span>
+                <input id="maintenance-item" class="form-input" type="text" maxlength="80" placeholder="例如：換機油、換齒輪油、年度保養" required>
+              </label>
+              <label class="field">
+                <span>花費金額</span>
+                <input id="maintenance-cost" class="form-input" type="number" min="0" step="1" inputmode="numeric" required>
+              </label>
+              <button class="btn-primary" type="submit">儲存保養紀錄</button>
+            </form>
+          </section>
+
+          <section class="section-block">
+            <div class="section-head">
+              <h3>歷史紀錄</h3>
+              <span class="section-tip">支援依車輛 / 類型篩選</span>
+            </div>
+            <div class="card history-toolbar">
+              <label class="field compact">
+                <span>車輛篩選</span>
+                <select id="history-vehicle-filter" class="form-input"></select>
+              </label>
+              <label class="field compact">
+                <span>類型</span>
+                <select id="history-type-filter" class="form-input">
+                  <option value="all">全部</option>
+                  <option value="fuel">油耗</option>
+                  <option value="maintenance">保養</option>
+                </select>
+              </label>
+            </div>
+            <div id="history-list" class="stack-list"></div>
+          </section>
+        </div>
+      </section>
+
+      <section id="view-manage" class="view" data-view="manage">
+        <div class="content-scroll">
+          <section class="section-block">
+            <div class="section-head">
+              <h3>新增車輛</h3>
+              <span class="section-tip">建立後會立即同步到所有下拉選單與儀表板</span>
+            </div>
+            <form id="vehicle-form" class="card form-card">
+              <label class="field">
+                <span>車輛名稱</span>
+                <input id="vehicle-name" class="form-input" type="text" maxlength="60" placeholder="例如：Toyota Corolla Cross / SYM Fiddle" required>
+              </label>
+              <label class="field">
+                <span>車輛類型</span>
+                <select id="vehicle-type" class="form-input" required>
+                  <option value="汽車">汽車</option>
+                  <option value="機車">機車</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>目前初始里程（km）</span>
+                <input id="vehicle-initial-odometer" class="form-input" type="number" min="0" step="0.1" inputmode="decimal" placeholder="例如：12000" required>
+              </label>
+              <button class="btn-primary" type="submit">新增車輛</button>
+            </form>
+          </section>
+
+          <section class="section-block">
+            <div class="section-head">
+              <h3>車輛與保養週期管理</h3>
+              <span class="section-tip">依不同車輛設定不同公里數保養項目</span>
+            </div>
+            <div class="card management-intro">
+              <p class="muted">例如：A 機車每 1000km 換機油、每 3000km 換齒輪油；B 汽車每 10000km 例行保養。</p>
+            </div>
+
+            <form id="plan-form" class="card form-card">
+              <label class="field">
+                <span>車輛</span>
+                <select id="plan-vehicle" class="form-input" required></select>
+              </label>
+              <label class="field">
+                <span>保養項目</span>
+                <input id="plan-item" class="form-input" type="text" maxlength="80" placeholder="例如：換機油、換齒輪油、例行保養" required>
+              </label>
+              <label class="field">
+                <span>週期公里數（km）</span>
+                <input id="plan-interval-km" class="form-input" type="number" min="1" step="1" inputmode="numeric" placeholder="例如：1000 / 3000 / 10000" required>
+              </label>
+              <label class="field">
+                <span>備註（可選）</span>
+                <textarea id="plan-notes" class="form-input form-textarea" rows="3" maxlength="120" placeholder="例如：建議使用 10W40"></textarea>
+              </label>
+              <button class="btn-primary" type="submit">新增保養週期</button>
+              <p class="hint-text">若該項目尚未有保養紀錄，將從目前里程開始推算下一次到期里程。</p>
+            </form>
+          </section>
+
+          <section class="section-block">
+            <div class="section-head">
+              <h3>車輛清單</h3>
+              <span class="section-tip">可查看目前里程與已設定週期</span>
+            </div>
+            <div id="manage-vehicle-list" class="stack-list"></div>
+          </section>
+
+          <section class="section-block">
+            <div class="section-head">
+              <h3>保養週期清單</h3>
+              <span class="section-tip">依到期狀態排序</span>
+            </div>
+            <div id="plan-list" class="stack-list"></div>
+          </section>
+        </div>
+      </section>
+
+      <section id="view-backup" class="view" data-view="backup">
+        <div class="content-scroll">
+          <section class="section-block">
+            <div class="section-head">
+              <h3>本機備份 / 還原</h3>
+              <span class="section-tip">JSON 格式，包含車輛、紀錄與保養週期</span>
+            </div>
+            <div class="card backup-actions">
+              <button id="export-json-btn" class="btn-primary" type="button">匯出 JSON 備份</button>
+              <label class="btn-secondary file-btn">
+                <input id="import-json-input" type="file" accept=".json,application/json">
+                匯入 JSON 還原
+              </label>
+              <p class="hint-text">匯入時可選擇覆蓋現有資料，或將新資料併入目前資料。</p>
+            </div>
+          </section>
+
+          <section class="section-block">
+            <div class="section-head">
+              <h3>Google Drive 備份</h3>
+              <span class="section-tip">手動 / 自動備份分開管理，各最多保留 5 份</span>
+            </div>
+            <div class="card drive-panel">
+              <div class="drive-status-row">
+                <div>
+                  <strong id="drive-auth-status">尚未連線 Google Drive</strong>
+                  <p class="muted">授權成功後會在本機保存 access token 與到期時間，仍以到期檢查為準。</p>
+                </div>
+                <button id="google-auth-btn" class="btn-action" type="button">Google 授權</button>
+              </div>
+
+              <div class="drive-actions-grid">
+                <button id="drive-manual-upload-btn" class="btn-primary" type="button" disabled>手動雲端備份</button>
+                <button id="drive-restore-list-btn" class="btn-secondary" type="button" disabled>從雲端還原</button>
+                <button id="drive-refresh-btn" class="btn-secondary" type="button" disabled>重新整理清單</button>
+              </div>
+
+              <div class="auto-backup-note">
+                <div class="inline-status">
+                  <span class="status-dot"></span>
+                  <span id="auto-backup-status">尚未執行今日自動備份</span>
+                </div>
+                <p class="hint-text">若今天尚未自動備份，且授權仍有效，App 啟動時會自動補做；若 App 持續開啟，也會在跨日後自動執行一次。</p>
+              </div>
+
+              <div class="restore-panel-head">
+                <h4>雲端備份清單</h4>
+                <span class="section-tip">新到舊排序，可直接還原</span>
+              </div>
+              <div id="drive-files" class="stack-list"></div>
+            </div>
+          </section>
+
+          <section class="section-block">
+            <div class="section-head">
+              <h3>Google Drive 設定</h3>
+              <span class="section-tip">Client ID 存於本機，無需修改程式碼</span>
+            </div>
+            <div class="card form-card">
+              <label class="field">
+                <span>Google OAuth Client ID</span>
+                <input id="google-client-id-input" class="form-input" type="text"
+                  placeholder="xxxxxxxx.apps.googleusercontent.com"
+                  autocomplete="off" autocorrect="off" spellcheck="false">
+              </label>
+              <p class="hint-text">前往 Google Cloud Console → APIs &amp; Services → Credentials，建立 OAuth 2.0 Web Client ID，並將此部署網址加入「Authorized JavaScript origins」。</p>
+              <button id="save-client-id-btn" class="btn-primary" type="button">儲存 Client ID</button>
+              <p id="client-id-saved-hint" class="hint-text" style="display:none"></p>
+            </div>
+          </section>
+
+          <section class="section-block">
+            <div class="section-head">
+              <h3>部署提醒</h3>
+              <span class="section-tip">部署前請確認</span>
+            </div>
+            <div class="settings-card card">
+              <div class="settings-item">
+                <div class="settings-icon">☁️</div>
+                <div>
+                  <strong>GitHub Pages / HTTPS</strong>
+                  <p>部署網址需為 HTTPS，並加入 Google Cloud Console 的 Authorized JavaScript origins。</p>
+                </div>
+              </div>
+              <div class="settings-item">
+                <div class="settings-icon">🔄</div>
+                <div>
+                  <strong>版本更新</strong>
+                  <p>每次發版請同步更新 <code>version.json</code> 與 <code>sw.js</code> 內的版本字串。</p>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <section class="section-block">
+            <div class="section-head">
+              <h3>危險操作</h3>
+              <span class="section-tip">會清空所有資料與本機偏好</span>
+            </div>
+            <div class="card danger-zone">
+              <p class="muted">包含：車輛、油耗紀錄、保養紀錄、保養週期、主題偏好，以及本機保存的 Google Drive 授權資訊。</p>
+              <button id="clear-all-data-btn" class="btn-danger" type="button">一鍵清除所有資料</button>
+            </div>
+          </section>
+        </div>
+      </section>
+    </main>
+
+    <nav id="bottom-nav" aria-label="主導覽">
+      <button class="nav-btn active" type="button" data-target="dashboard">
+        <span class="nav-icon">⌂</span>
+        <span>儀表板</span>
+      </button>
+      <button class="nav-btn" type="button" data-target="add">
+        <span class="nav-icon">＋</span>
+        <span>新增紀錄</span>
+      </button>
+      <button class="nav-btn" type="button" data-target="manage">
+        <span class="nav-icon">⚙</span>
+        <span>車輛管理</span>
+      </button>
+      <button class="nav-btn" type="button" data-target="backup">
+        <span class="nav-icon">☁</span>
+        <span>資料備份</span>
+      </button>
+    </nav>
+  </div>
+
+  <div id="modal-overlay" hidden>
+    <div id="modal-content" class="sheet-mode">
+      <div class="modal-sheet-handle"></div>
+      <div class="modal-sheet-body">
+        <h3 id="modal-title">提示</h3>
+        <p id="modal-message"></p>
+        <div id="modal-actions" class="modal-actions"></div>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast" role="status" aria-live="polite"></div>
+
+  <script async defer src="https://accounts.google.com/gsi/client" onload="window.__gisLoaded && window.__gisLoaded()"></script>
+  <script src="main.js"></script>
+</body>
+</html>
