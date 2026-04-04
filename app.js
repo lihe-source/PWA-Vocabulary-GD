@@ -3828,8 +3828,6 @@ Views.settings = {
           <div class="one-click-import-hint">可選取單字/例句/統計 CSV，或直接選取備份 ZIP 檔一鍵還原</div>
         </div>
 
-        ${fbSectionHtml}
-
         <div style="height:20px"></div>
       </div>
 
