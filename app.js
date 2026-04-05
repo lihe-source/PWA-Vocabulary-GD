@@ -1,6 +1,6 @@
 // ===========================
-// 英文單字複習 PWA - app.js V5_0
-// 更新：設定頁重整，備份清單顯示資料統計，版本號顯示於設定頁底部
+// 英文單字複習 PWA - app.js V5_1
+// 更新：Google Drive 登入狀態持久化（localStorage+靜默刷新），設定頁底部新增檢查更新按鈕
 // ===========================
 
   // Listen for SW_UPDATED message → prompt user to refresh
@@ -1045,6 +1045,7 @@ If the word does not exist or is invalid, return: []`;
 const GDrive = {
   _token: null,
   _email: null,
+  _client: null,  // reusable GIS token client
 
   isSignedIn()   { return !!this._token; },
   getUserEmail() { return this._email || ''; },
@@ -1061,54 +1062,122 @@ const GDrive = {
     });
   },
 
-  // Try to restore a previously saved token (valid up to ~1hr)
-  async tryRestoreToken() {
-    const t = localStorage.getItem('gdriveToken');
-    if (!t) return false;
-    try {
-      const r = await fetch('https://www.googleapis.com/oauth2/v1/tokeninfo?access_token=' + t);
-      const info = await r.json();
-      if (info.error || !info.email) { localStorage.removeItem('gdriveToken'); return false; }
-      this._token = t;
-      this._email = info.email;
-      return true;
-    } catch { localStorage.removeItem('gdriveToken'); return false; }
+  // Persist token + email + expiry so we survive page reloads
+  _saveSession(token, email, expiresIn) {
+    const exp = Date.now() + (expiresIn || 3500) * 1000;
+    this._token = token;
+    this._email = email;
+    localStorage.setItem('gdriveToken', token);
+    localStorage.setItem('gdriveEmail', email);
+    localStorage.setItem('gdriveExpiry', String(exp));
   },
 
-  async signIn() {
-    const clientId = DB.getGDriveClientId();
-    if (!clientId) throw new Error('NO_CLIENT_ID');
+  _clearSession() {
+    this._token = null;
+    this._email = null;
+    localStorage.removeItem('gdriveToken');
+    localStorage.removeItem('gdriveEmail');
+    localStorage.removeItem('gdriveExpiry');
+  },
+
+  // Restore from localStorage if token not yet expired (with 5-min safety margin)
+  tryRestoreFromStorage() {
+    const t   = localStorage.getItem('gdriveToken');
+    const em  = localStorage.getItem('gdriveEmail');
+    const exp = parseInt(localStorage.getItem('gdriveExpiry') || '0');
+    if (!t || !em || Date.now() > exp - 300_000) return false;  // expired or <5min left
+    this._token = t;
+    this._email = em;
+    return true;
+  },
+
+  // Build (or reuse) a GIS token client
+  async _getClient(clientId) {
     await this._loadGIS();
-    return new Promise((resolve, reject) => {
-      const client = google.accounts.oauth2.initTokenClient({
+    if (!this._client) {
+      this._client = google.accounts.oauth2.initTokenClient({
         client_id: clientId,
         scope: 'https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/userinfo.email',
-        callback: async (resp) => {
-          if (resp.error) { reject(new Error(resp.error)); return; }
-          this._token = resp.access_token;
-          localStorage.setItem('gdriveToken', this._token);
+        callback: () => {},       // overridden per-call
+        error_callback: () => {}  // overridden per-call
+      });
+    }
+    return this._client;
+  },
+
+  // Core token request — promptMode: '' = silent (no UI), 'select_account' = always show picker
+  async _requestToken(promptMode) {
+    const clientId = DB.getGDriveClientId();
+    if (!clientId) throw new Error('NO_CLIENT_ID');
+    const client = await this._getClient(clientId);
+    return new Promise((resolve, reject) => {
+      client.callback       = async (resp) => {
+        if (resp.error) { reject(new Error(resp.error)); return; }
+        // Fetch email if we don't have it yet
+        let email = this._email || '';
+        if (!email) {
           try {
             const r = await fetch('https://www.googleapis.com/oauth2/v1/userinfo', {
-              headers: { Authorization: 'Bearer ' + this._token }
+              headers: { Authorization: 'Bearer ' + resp.access_token }
             });
             const info = await r.json();
-            this._email = info.email || '';
+            email = info.email || '';
           } catch {}
-          resolve();
-        },
-        error_callback: (e) => reject(new Error(e.type || 'AUTH_FAILED'))
-      });
-      client.requestAccessToken({ prompt: 'select_account' });
+        }
+        this._saveSession(resp.access_token, email, resp.expires_in);
+        resolve();
+      };
+      client.error_callback = (e) => reject(new Error(e.type || 'AUTH_FAILED'));
+      client.requestAccessToken({ prompt: promptMode });
     });
+  },
+
+  // Silent refresh: try prompt='' first; if it errors (consent needed) throw so caller can retry with UI
+  async silentRefresh() {
+    await this._requestToken('');
+  },
+
+  // Full sign-in with account picker (user-initiated)
+  async signIn() {
+    await this._requestToken('select_account');
+  },
+
+  // Auto-refresh: called before API calls when token is missing/expired
+  // 1. Try localStorage restore → still valid, done
+  // 2. Try silent GIS refresh → no UI required
+  // 3. Throw TOKEN_EXPIRED so UI can prompt user to sign in again
+  async ensureToken() {
+    if (this._token) return;                        // already in memory
+    if (this.tryRestoreFromStorage()) return;       // restored from localStorage
+    // Try silent refresh (works if user previously consented & browser has Google session)
+    try {
+      await this.silentRefresh();
+      return;
+    } catch (e) {
+      // Silent auth failed (no Google session, or consent revoked)
+      this._clearSession();
+      throw new Error('TOKEN_EXPIRED');
+    }
+  },
+
+  // Startup: restore from storage silently; if expired try silent GIS refresh
+  async tryRestoreToken() {
+    if (this.tryRestoreFromStorage()) return true;
+    const clientId = DB.getGDriveClientId();
+    if (!clientId) return false;
+    try {
+      await this._loadGIS();
+      await this.silentRefresh();
+      return true;
+    } catch { return false; }
   },
 
   signOut() {
     if (this._token && window.google?.accounts?.oauth2) {
       google.accounts.oauth2.revoke(this._token, () => {});
     }
-    this._token = null;
-    this._email = null;
-    localStorage.removeItem('gdriveToken');
+    this._client = null;
+    this._clearSession();
   },
 
   _buildPayload() {
@@ -1125,7 +1194,7 @@ const GDrive = {
   },
 
   async upload() {
-    if (!this._token) throw new Error('NOT_SIGNED_IN');
+    await this.ensureToken();
     const data     = this._buildPayload();
     const folderId = DB.getGDriveFolderId();
     const ts       = new Date().toISOString().replace(/[:.]/g, '-');
@@ -1149,7 +1218,7 @@ const GDrive = {
     });
     if (!r.ok) {
       const err = await r.json().catch(() => ({}));
-      if (r.status === 401) { this._token = null; localStorage.removeItem('gdriveToken'); throw new Error('TOKEN_EXPIRED'); }
+      if (r.status === 401) { this._clearSession(); throw new Error('TOKEN_EXPIRED'); }
       throw new Error('UPLOAD_FAILED: ' + (err.error?.message || r.status));
     }
     const now = new Date().toLocaleString('zh-TW');
@@ -1158,7 +1227,7 @@ const GDrive = {
   },
 
   async listBackups() {
-    if (!this._token) throw new Error('NOT_SIGNED_IN');
+    await this.ensureToken();
     const folderId = DB.getGDriveFolderId();
     let q = "name contains 'vocab_backup_' and mimeType='application/json' and trashed=false";
     if (folderId) q += " and '" + folderId + "' in parents";
@@ -1167,7 +1236,7 @@ const GDrive = {
       headers: { Authorization: 'Bearer ' + this._token }
     });
     if (!r.ok) {
-      if (r.status === 401) { this._token = null; localStorage.removeItem('gdriveToken'); throw new Error('TOKEN_EXPIRED'); }
+      if (r.status === 401) { this._clearSession(); throw new Error('TOKEN_EXPIRED'); }
       throw new Error('LIST_FAILED: ' + r.status);
     }
     const data = await r.json();
@@ -1175,12 +1244,12 @@ const GDrive = {
   },
 
   async downloadFile(fileId) {
-    if (!this._token) throw new Error('NOT_SIGNED_IN');
+    await this.ensureToken();
     const r = await fetch('https://www.googleapis.com/drive/v3/files/' + fileId + '?alt=media', {
       headers: { Authorization: 'Bearer ' + this._token }
     });
     if (!r.ok) {
-      if (r.status === 401) { this._token = null; localStorage.removeItem('gdriveToken'); throw new Error('TOKEN_EXPIRED'); }
+      if (r.status === 401) { this._clearSession(); throw new Error('TOKEN_EXPIRED'); }
       throw new Error('DOWNLOAD_FAILED: ' + r.status);
     }
     return r.json();
@@ -3837,9 +3906,20 @@ Views.settings = {
           <div class="settings-tip" style="margin-bottom:0">免費方案每天有配額限制，每日例句每天只生成一次以節省配額。所有 Key 僅儲存於本機裝置。</div>
         </div>
 
-        <!-- 版本號 -->
-        <div style="text-align:center;padding:16px 0 8px;color:var(--text-muted);font-size:12px;letter-spacing:0.5px">
-          英文單字複習 PWA &nbsp;·&nbsp; V5_0
+        <!-- 版本號 + 檢查更新 -->
+        <div class="settings-section-label" style="margin-top:16px">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:15px;height:15px"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+          版本資訊
+        </div>
+        <div class="settings-card" style="text-align:center">
+          <div style="color:var(--text-muted);font-size:13px;margin-bottom:12px">
+            英文單字複習 PWA &nbsp;·&nbsp; <strong style="color:var(--text-primary)">V5_1</strong>
+          </div>
+          <button class="btn-secondary" id="check-update-btn" style="width:100%;margin-bottom:8px">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px;margin-right:6px"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+            檢查更新
+          </button>
+          <div id="update-status" style="font-size:12px;color:var(--text-muted);min-height:16px"></div>
         </div>
 
         <div style="height:12px"></div>
@@ -4178,6 +4258,47 @@ Views.settings = {
     document.getElementById('gd-auto-sync')?.addEventListener('change', (e) => {
       DB.setGDriveAutoSync(e.target.checked);
       showToast(e.target.checked ? '✓ 已開啟自動備份' : '已關閉自動備份');
+    });
+
+    // ── 檢查更新 ──
+    document.getElementById('check-update-btn')?.addEventListener('click', async () => {
+      const btn    = document.getElementById('check-update-btn');
+      const status = document.getElementById('update-status');
+      if (!btn || !status) return;
+      btn.disabled = true;
+      status.textContent = '檢查中…';
+      const LOCAL_VER = 'Voc-PWA-V5_1';
+      try {
+        // Fetch sw.js from GitHub raw (cache-bust with timestamp)
+        const swUrl = './sw.js?t=' + Date.now();
+        const r = await fetch(swUrl, { cache: 'no-store' });
+        if (!r.ok) throw new Error('fetch_failed');
+        const text = await r.text();
+        const m = text.match(/CACHE_NAME\s*=\s*['"]([^'"]+)['"]/);
+        if (!m) throw new Error('parse_failed');
+        const remoteVer = m[1];
+        if (remoteVer === LOCAL_VER) {
+          status.textContent = '✓ 已是最新版本（' + LOCAL_VER + '）';
+        } else {
+          status.innerHTML = '發現新版本：<strong>' + remoteVer + '</strong>　<button id="do-update-btn" style="font-size:12px;padding:2px 10px;border-radius:8px;border:1.5px solid var(--primary);background:var(--primary);color:#fff;cursor:pointer">立即更新</button>';
+          document.getElementById('do-update-btn')?.addEventListener('click', async () => {
+            status.textContent = '更新中，請稍候…';
+            // Unregister old SW so new one installs on next reload
+            if ('serviceWorker' in navigator) {
+              const regs = await navigator.serviceWorker.getRegistrations();
+              for (const reg of regs) await reg.unregister();
+              // Clear all caches
+              const keys = await caches.keys();
+              await Promise.all(keys.map(k => caches.delete(k)));
+            }
+            showToast('✓ 更新完成，重新載入中…', 2000);
+            setTimeout(() => location.reload(true), 1800);
+          });
+        }
+      } catch (e) {
+        status.textContent = '檢查失敗，請確認網路連線';
+      }
+      btn.disabled = false;
     });
   }
 };
