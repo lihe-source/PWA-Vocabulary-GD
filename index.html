@@ -1,57 +1,80 @@
-<!DOCTYPE html>
-<html lang="zh-TW">
+<!doctype html>
+<html lang="zh-Hant">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+  <meta name="theme-color" content="#101426">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-  <meta name="apple-mobile-web-app-title" content="英文複習">
-  <meta name="theme-color" content="#1a7a4a">
-  <title>英文單字複習</title>
-  <link rel="manifest" href="manifest.json">
-  <link rel="apple-touch-icon" href="icon-192.png">
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700;800;900&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
-  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
-  <link rel="stylesheet" href="style.css">
+  <title>英文單字複習 PWA</title>
+  <link rel="manifest" href="./manifest.json">
+  <link rel="stylesheet" href="./style.css">
 </head>
 <body>
-  <div id="app">
-    <div id="view-container"></div>
-    <nav id="bottom-nav">
-      <button class="nav-btn active" data-view="home">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
-        <span>主頁</span>
-      </button>
-      <button class="nav-btn" data-view="practice">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
-        <span>練習</span>
-      </button>
-      <button class="nav-btn" data-view="database">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>
-        <span>資料庫</span>
-      </button>
-      <button class="nav-btn" data-view="stats">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
-        <span>統計</span>
-      </button>
-      <button class="nav-btn" data-view="settings">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
-        <span>設定</span>
-      </button>
+  <div id="app" class="app-shell">
+    <header class="topbar">
+      <div>
+        <h1>英文單字複習</h1>
+        <p id="auth-subtitle">Google Drive 持續登入優化版</p>
+      </div>
+      <span class="version">V5_2</span>
+    </header>
+
+    <main class="content">
+      <section class="card status-card">
+        <div class="status-row">
+          <div>
+            <h2>Google Drive 雲端備份</h2>
+            <p id="drive-status">尚未登入</p>
+          </div>
+          <div id="status-pill" class="pill off">離線</div>
+        </div>
+        <div class="button-grid">
+          <button id="btn-signin" class="primary">登入 Google</button>
+          <button id="btn-refresh" class="secondary">靜默恢復登入</button>
+          <button id="btn-backup" class="secondary">立即備份</button>
+          <button id="btn-restore" class="secondary">列出備份</button>
+          <button id="btn-signout" class="danger">登出</button>
+        </div>
+        <p class="hint">此版會保存「登入狀態、Email、token 到期時間」，重新開啟 PWA 時先恢復有效 token；若 token 過期，會自動用 Google session 嘗試靜默換新 token。</p>
+      </section>
+
+      <section class="card">
+        <h2>Google Drive 設定</h2>
+        <label>OAuth Client ID
+          <input id="client-id" placeholder="貼上 Google OAuth Web Client ID">
+        </label>
+        <label>Google Drive 資料夾 ID（選填）
+          <input id="folder-id" placeholder="留空則備份到使用者 Drive 根目錄">
+        </label>
+        <label class="switch-row">
+          <span>開啟後自動備份</span>
+          <input id="auto-sync" type="checkbox">
+        </label>
+        <button id="btn-save-settings" class="primary full">儲存設定</button>
+      </section>
+
+      <section class="card">
+        <h2>單字資料測試區</h2>
+        <div class="word-form">
+          <input id="word-en" placeholder="English">
+          <input id="word-zh" placeholder="中文">
+          <button id="btn-add-word" class="primary">新增</button>
+        </div>
+        <ul id="word-list" class="word-list"></ul>
+      </section>
+
+      <section class="card">
+        <h2>備份清單</h2>
+        <div id="backup-list" class="backup-list empty">尚未讀取備份。</div>
+      </section>
+    </main>
+
+    <nav class="bottom-nav">
+      <span>Home</span><span>Practice</span><span>Settings</span>
     </nav>
-    <!-- Global back-to-top FAB (all pages) -->
-    <button id="global-back-top" class="global-back-top" title="回到頂端" aria-label="回到頂端" style="display:none">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="18 15 12 9 6 15"/></svg>
-    </button>
   </div>
-  <div id="modal-overlay" class="hidden">
-    <div id="modal-box">
-      <div id="modal-content"></div>
-    </div>
-  </div>
-  <script src="app.js"></script>
+  <div id="toast"></div>
+  <script src="./app.js"></script>
 </body>
 </html>
