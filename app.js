@@ -1,6 +1,6 @@
 // ===========================
-// 英文單字複習 PWA - app.js V5_1
-// 更新：Google Drive 登入狀態持久化（localStorage+靜默刷新），設定頁底部新增檢查更新按鈕
+// 英文單字複習 PWA - app.js V5_3
+// 更新：Google Drive 記住帳號、互動式續權、V5.3 版本更新
 // ===========================
 
   // Listen for SW_UPDATED message → prompt user to refresh
@@ -1045,131 +1045,186 @@ If the word does not exist or is invalid, return: []`;
 const GDrive = {
   _token: null,
   _email: null,
-  _client: null,  // reusable GIS token client
+  _client: null,
+  _clientKey: '',
+  SESSION_KEYS: {
+    token: 'gdriveToken',
+    email: 'gdriveEmail',
+    expiry: 'gdriveExpiry',
+    clientId: 'gdriveSessionClientId',
+    scope: 'gdriveSessionScope',
+    lastLogin: 'gdriveLastLoginAt'
+  },
+  SCOPE: 'https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/userinfo.email',
+  EXPIRY_MARGIN_MS: 5 * 60 * 1000,
 
-  isSignedIn()   { return !!this._token; },
-  getUserEmail() { return this._email || ''; },
+  isSignedIn() { return !!this._token && !this._isTokenExpired(); },
+  hasRememberedSession() { return !!this.getUserEmail(); },
+  getUserEmail() { return this._email || localStorage.getItem(this.SESSION_KEYS.email) || ''; },
+  getSessionStatus() {
+    if (this.isSignedIn()) return 'active';
+    return this.hasRememberedSession() ? 'remembered' : 'none';
+  },
 
   _loadGIS() {
     return new Promise((resolve, reject) => {
       if (window.google?.accounts?.oauth2) { resolve(); return; }
+      const existing = document.querySelector('script[data-gis="1"]');
+      if (existing) {
+        existing.addEventListener('load', () => resolve(), { once: true });
+        existing.addEventListener('error', () => reject(new Error('GIS_LOAD_FAILED')), { once: true });
+        return;
+      }
       const s = document.createElement('script');
       s.src = 'https://accounts.google.com/gsi/client';
       s.async = true;
+      s.defer = true;
+      s.dataset.gis = '1';
       s.onload = resolve;
       s.onerror = () => reject(new Error('GIS_LOAD_FAILED'));
       document.head.appendChild(s);
     });
   },
 
-  // Persist token + email + expiry so we survive page reloads
-  _saveSession(token, email, expiresIn) {
-    const exp = Date.now() + (expiresIn || 3500) * 1000;
+  _sessionClientId() { return localStorage.getItem(this.SESSION_KEYS.clientId) || ''; },
+  _sessionScope() { return localStorage.getItem(this.SESSION_KEYS.scope) || ''; },
+  _expiry() { return parseInt(localStorage.getItem(this.SESSION_KEYS.expiry) || '0', 10) || 0; },
+  _isTokenExpired() { return !this._token || Date.now() > this._expiry() - this.EXPIRY_MARGIN_MS; },
+  _hasSameClientAndScope(clientId) {
+    return this._sessionClientId() === clientId && this._sessionScope() === this.SCOPE;
+  },
+
+  _saveSession(token, email, expiresIn, clientId) {
+    const exp = Date.now() + (Number(expiresIn) || 3500) * 1000;
     this._token = token;
-    this._email = email;
-    localStorage.setItem('gdriveToken', token);
-    localStorage.setItem('gdriveEmail', email);
-    localStorage.setItem('gdriveExpiry', String(exp));
+    this._email = email || this.getUserEmail();
+    localStorage.setItem(this.SESSION_KEYS.token, token);
+    localStorage.setItem(this.SESSION_KEYS.email, this._email || '');
+    localStorage.setItem(this.SESSION_KEYS.expiry, String(exp));
+    localStorage.setItem(this.SESSION_KEYS.clientId, clientId || DB.getGDriveClientId());
+    localStorage.setItem(this.SESSION_KEYS.scope, this.SCOPE);
+    localStorage.setItem(this.SESSION_KEYS.lastLogin, new Date().toISOString());
+  },
+
+  _clearTokenOnly() {
+    this._token = null;
+    localStorage.removeItem(this.SESSION_KEYS.token);
+    localStorage.removeItem(this.SESSION_KEYS.expiry);
   },
 
   _clearSession() {
     this._token = null;
     this._email = null;
-    localStorage.removeItem('gdriveToken');
-    localStorage.removeItem('gdriveEmail');
-    localStorage.removeItem('gdriveExpiry');
+    Object.values(this.SESSION_KEYS).forEach(k => localStorage.removeItem(k));
   },
 
-  // Restore from localStorage if token not yet expired (with 5-min safety margin)
   tryRestoreFromStorage() {
-    const t   = localStorage.getItem('gdriveToken');
-    const em  = localStorage.getItem('gdriveEmail');
-    const exp = parseInt(localStorage.getItem('gdriveExpiry') || '0');
-    if (!t || !em || Date.now() > exp - 300_000) return false;  // expired or <5min left
-    this._token = t;
-    this._email = em;
+    const clientId = DB.getGDriveClientId();
+    const token = localStorage.getItem(this.SESSION_KEYS.token);
+    const email = localStorage.getItem(this.SESSION_KEYS.email) || '';
+    const exp = this._expiry();
+    if (email) this._email = email;
+    if (!token || !email || !clientId || !this._hasSameClientAndScope(clientId)) return false;
+    if (Date.now() > exp - this.EXPIRY_MARGIN_MS) return false;
+    this._token = token;
+    this._email = email;
     return true;
   },
 
-  // Build (or reuse) a GIS token client
   async _getClient(clientId) {
     await this._loadGIS();
-    if (!this._client) {
+    const key = clientId + '|' + this.SCOPE;
+    if (!this._client || this._clientKey !== key) {
+      this._clientKey = key;
       this._client = google.accounts.oauth2.initTokenClient({
         client_id: clientId,
-        scope: 'https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/userinfo.email',
-        callback: () => {},       // overridden per-call
-        error_callback: () => {}  // overridden per-call
+        scope: this.SCOPE,
+        include_granted_scopes: true,
+        callback: () => {},
+        error_callback: () => {}
       });
     }
     return this._client;
   },
 
-  // Core token request — promptMode: '' = silent (no UI), 'select_account' = always show picker
-  async _requestToken(promptMode) {
+  async _requestToken({ promptMode = '', accountHint = '' } = {}) {
     const clientId = DB.getGDriveClientId();
     if (!clientId) throw new Error('NO_CLIENT_ID');
     const client = await this._getClient(clientId);
+    const hint = accountHint || this.getUserEmail();
     return new Promise((resolve, reject) => {
-      client.callback       = async (resp) => {
-        if (resp.error) { reject(new Error(resp.error)); return; }
-        // Fetch email if we don't have it yet
-        let email = this._email || '';
-        if (!email) {
-          try {
-            const r = await fetch('https://www.googleapis.com/oauth2/v1/userinfo', {
-              headers: { Authorization: 'Bearer ' + resp.access_token }
-            });
-            const info = await r.json();
-            email = info.email || '';
-          } catch {}
-        }
-        this._saveSession(resp.access_token, email, resp.expires_in);
+      let settled = false;
+      const fail = (err) => {
+        if (settled) return;
+        settled = true;
+        reject(err instanceof Error ? err : new Error(String(err || 'AUTH_FAILED')));
+      };
+      client.callback = async (resp) => {
+        if (settled) return;
+        if (resp.error) { fail(new Error(resp.error)); return; }
+        let email = this.getUserEmail();
+        try {
+          const r = await fetch('https://www.googleapis.com/oauth2/v1/userinfo', {
+            headers: { Authorization: 'Bearer ' + resp.access_token }
+          });
+          const info = await r.json();
+          email = info.email || email;
+        } catch {}
+        settled = true;
+        this._saveSession(resp.access_token, email, resp.expires_in, clientId);
         resolve();
       };
-      client.error_callback = (e) => reject(new Error(e.type || 'AUTH_FAILED'));
-      client.requestAccessToken({ prompt: promptMode });
+      client.error_callback = (e) => fail(new Error(e?.type || e?.message || 'AUTH_FAILED'));
+      const req = { prompt: promptMode };
+      if (hint) {
+        req.hint = hint;
+        req.login_hint = hint;
+      }
+      client.requestAccessToken(req);
     });
   },
 
-  // Silent refresh: try prompt='' first; if it errors (consent needed) throw so caller can retry with UI
   async silentRefresh() {
-    await this._requestToken('');
+    await this._requestToken({ promptMode: '' });
   },
 
-  // Full sign-in with account picker (user-initiated)
   async signIn() {
-    await this._requestToken('select_account');
+    await this._requestToken({ promptMode: 'consent select_account' });
   },
 
-  // Auto-refresh: called before API calls when token is missing/expired
-  // 1. Try localStorage restore → still valid, done
-  // 2. Try silent GIS refresh → no UI required
-  // 3. Throw TOKEN_EXPIRED so UI can prompt user to sign in again
-  async ensureToken() {
-    if (this._token) return;                        // already in memory
-    if (this.tryRestoreFromStorage()) return;       // restored from localStorage
-    // Try silent refresh (works if user previously consented & browser has Google session)
+  async reconnect() {
+    await this._requestToken({ promptMode: '', accountHint: this.getUserEmail() });
+  },
+
+  async ensureToken(options = {}) {
+    const interactive = !!options.interactive;
+    if (this.isSignedIn()) return;
+    if (this.tryRestoreFromStorage()) return;
     try {
       await this.silentRefresh();
       return;
     } catch (e) {
-      // Silent auth failed (no Google session, or consent revoked)
-      this._clearSession();
-      throw new Error('TOKEN_EXPIRED');
+      this._clearTokenOnly();
+      if (!interactive) throw new Error('TOKEN_EXPIRED');
+      // Safari / iOS PWA often blocks silent OAuth after the app is closed.
+      // Because this path is triggered by a user click, we can safely show the Google consent/account UI.
+      await this._requestToken({ promptMode: this.getUserEmail() ? 'consent' : 'consent select_account' });
     }
   },
 
-  // Startup: restore from storage silently; if expired try silent GIS refresh
   async tryRestoreToken() {
     if (this.tryRestoreFromStorage()) return true;
-    const clientId = DB.getGDriveClientId();
-    if (!clientId) return false;
-    try {
-      await this._loadGIS();
-      await this.silentRefresh();
-      return true;
-    } catch { return false; }
+    if (!DB.getGDriveClientId()) return false;
+    if (this.getUserEmail()) {
+      try {
+        await this.silentRefresh();
+        return true;
+      } catch (e) {
+        this._clearTokenOnly();
+        return false;
+      }
+    }
+    return false;
   },
 
   signOut() {
@@ -1177,6 +1232,7 @@ const GDrive = {
       google.accounts.oauth2.revoke(this._token, () => {});
     }
     this._client = null;
+    this._clientKey = '';
     this._clearSession();
   },
 
@@ -1189,12 +1245,13 @@ const GDrive = {
       boosted:      DB.getBoostedWords(),
       essayHistory: DB.getEssayHistory(),
       aiAskHistory: DB.getAiAskHistory(),
-      updatedAt:    new Date().toISOString()
+      updatedAt:    new Date().toISOString(),
+      appVersion:   'V5.3'
     };
   },
 
-  async upload() {
-    await this.ensureToken();
+  async upload(options = {}) {
+    await this.ensureToken(options);
     const data     = this._buildPayload();
     const folderId = DB.getGDriveFolderId();
     const ts       = new Date().toISOString().replace(/[:.]/g, '-');
@@ -1205,7 +1262,8 @@ const GDrive = {
       sentences: [...(data.sentences||[]), ...(data.imported||[])].length,
       stats:     (data.history||[]).length,
       essay:     (data.essayHistory||[]).reduce((s,h)=>s+(h.sessions||[]).length,0),
-      aiAsk:     (data.aiAskHistory||[]).length
+      aiAsk:     (data.aiAskHistory||[]).length,
+      version:   'V5.3'
     };
     const metadata = { name: fileName, mimeType: 'application/json', description: JSON.stringify(summary), ...(folderId ? { parents: [folderId] } : {}) };
     const body = '--' + boundary + '\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n'
@@ -1218,7 +1276,7 @@ const GDrive = {
     });
     if (!r.ok) {
       const err = await r.json().catch(() => ({}));
-      if (r.status === 401) { this._clearSession(); throw new Error('TOKEN_EXPIRED'); }
+      if (r.status === 401) { this._clearTokenOnly(); throw new Error('TOKEN_EXPIRED'); }
       throw new Error('UPLOAD_FAILED: ' + (err.error?.message || r.status));
     }
     const now = new Date().toLocaleString('zh-TW');
@@ -1226,8 +1284,8 @@ const GDrive = {
     return now;
   },
 
-  async listBackups() {
-    await this.ensureToken();
+  async listBackups(options = {}) {
+    await this.ensureToken(options);
     const folderId = DB.getGDriveFolderId();
     let q = "name contains 'vocab_backup_' and mimeType='application/json' and trashed=false";
     if (folderId) q += " and '" + folderId + "' in parents";
@@ -1236,20 +1294,20 @@ const GDrive = {
       headers: { Authorization: 'Bearer ' + this._token }
     });
     if (!r.ok) {
-      if (r.status === 401) { this._clearSession(); throw new Error('TOKEN_EXPIRED'); }
+      if (r.status === 401) { this._clearTokenOnly(); throw new Error('TOKEN_EXPIRED'); }
       throw new Error('LIST_FAILED: ' + r.status);
     }
     const data = await r.json();
     return data.files || [];
   },
 
-  async downloadFile(fileId) {
-    await this.ensureToken();
+  async downloadFile(fileId, options = {}) {
+    await this.ensureToken(options);
     const r = await fetch('https://www.googleapis.com/drive/v3/files/' + fileId + '?alt=media', {
       headers: { Authorization: 'Bearer ' + this._token }
     });
     if (!r.ok) {
-      if (r.status === 401) { this._clearSession(); throw new Error('TOKEN_EXPIRED'); }
+      if (r.status === 401) { this._clearTokenOnly(); throw new Error('TOKEN_EXPIRED'); }
       throw new Error('DOWNLOAD_FAILED: ' + r.status);
     }
     return r.json();
@@ -3644,6 +3702,8 @@ Views.settings = {
     const clientId    = DB.getGDriveClientId();
     const folderId    = DB.getGDriveFolderId();
     const signedIn    = GDrive.isSignedIn();
+    const sessionStatus = GDrive.getSessionStatus();
+    const remembered  = sessionStatus === 'remembered';
     const email       = GDrive.getUserEmail();
     const lastSync    = DB.getGDriveLastSync();
     const autoSync    = DB.getGDriveAutoSync();
@@ -3672,10 +3732,10 @@ Views.settings = {
           Google Drive 雲端備份
         </div>
         <div class="settings-card">
-          ${signedIn ? `
+          ${(signedIn || remembered) ? `
             <div class="fb-status-row">
-              <div class="fb-status-dot connected"></div>
-              <span class="fb-status-text">已登入：${email}</span>
+              <div class="fb-status-dot ${signedIn ? 'connected' : 'disconnected'}"></div>
+              <span class="fb-status-text">${signedIn ? '已登入' : '已記住帳號，待操作時自動續權'}：${email}</span>
             </div>
             ${lastSync ? '<div class="fb-last-sync" style="margin-bottom:10px">上次備份：' + lastSync + '</div>' : ''}
             <div class="settings-btn-row" style="margin-bottom:10px">
@@ -3686,6 +3746,7 @@ Views.settings = {
               <input type="checkbox" id="gd-auto-sync"${autoSync ? ' checked' : ''}>
               <span>每次開啟 APP 自動備份</span>
             </label>
+            ${remembered ? '<div class="settings-tip" style="margin-top:8px">iOS PWA 關閉後可能需要 Google 再確認一次授權；本程式會保留帳號並在上傳/還原時自動續權，不會清空登入設定。</div>' : ''}
             <button class="btn-fb-signout-bottom" id="gd-signout-btn" style="margin-top:10px">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:15px;height:15px"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
               登出 Google（${email}）
@@ -3913,7 +3974,7 @@ Views.settings = {
         </div>
         <div class="settings-card" style="text-align:center">
           <div style="color:var(--text-muted);font-size:13px;margin-bottom:12px">
-            英文單字複習 PWA &nbsp;·&nbsp; <strong style="color:var(--text-primary)">V5_1</strong>
+            英文單字複習 PWA &nbsp;·&nbsp; <strong style="color:var(--text-primary)">V5_3</strong>
           </div>
           <button class="btn-secondary" id="check-update-btn" style="width:100%;margin-bottom:8px">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px;margin-right:6px"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
@@ -4143,7 +4204,7 @@ Views.settings = {
       DB.setGDriveFolderId(fid);
       showToast('✓ Google Drive 設定已儲存');
       // If signed in with old token, sign out since client ID may have changed
-      if (GDrive.isSignedIn()) { GDrive.signOut(); this.render(container); }
+      if (GDrive.hasRememberedSession()) { GDrive.signOut(); this.render(container); }
     });
 
     // ── Google 登入 ──
@@ -4177,12 +4238,12 @@ Views.settings = {
       const btn = document.getElementById('gd-upload-btn');
       if (btn) btn.disabled = true;
       try {
-        const ts = await GDrive.upload();
+        const ts = await GDrive.upload({ interactive: true });
         showToast('✓ 備份已上傳至 Google Drive（' + ts + '）');
         this.render(container);
       } catch(err) {
         if (err.message === 'NOT_SIGNED_IN')  showToast('請先登入 Google', 3000);
-        else if (err.message === 'TOKEN_EXPIRED') { showToast('登入已過期，請重新登入', 3000); GDrive.signOut(); this.render(container); }
+        else if (err.message === 'TOKEN_EXPIRED') { showToast('需要 Google 重新確認授權，請再按一次操作', 3500); this.render(container); }
         else showToast('上傳失敗：' + err.message, 3000);
       }
       if (btn) btn.disabled = false;
@@ -4193,7 +4254,7 @@ Views.settings = {
       const btn = document.getElementById('gd-download-btn');
       if (btn) btn.disabled = true;
       try {
-        const files = await GDrive.listBackups();
+        const files = await GDrive.listBackups({ interactive: true });
         if (!files.length) { showToast('雲端尚無備份，請先上傳', 3000); if (btn) btn.disabled=false; return; }
         const rows = files.map((f, i) => {
           const ts  = f.createdTime ? new Date(f.createdTime).toLocaleString('zh-TW') : '—';
@@ -4224,7 +4285,7 @@ Views.settings = {
             const fileId = b.dataset.fid;
             document.querySelectorAll('.fb-slot-btn').forEach(x => x.disabled = true);
             try {
-              const data = await GDrive.downloadFile(fileId);
+              const data = await GDrive.downloadFile(fileId, { interactive: true });
               Modal.show(`<div class="modal-handle"></div>
                 <div class="modal-title">套用備份</div>
                 <p style="font-size:13px;color:var(--text-muted);margin-bottom:14px">
@@ -4241,14 +4302,14 @@ Views.settings = {
               document.getElementById('gd-dl-merge').addEventListener('click',     () => apply('merge'));
               document.getElementById('gd-dl-cancel2').addEventListener('click',   () => Modal.hide());
             } catch(err) {
-              if (err.message === 'TOKEN_EXPIRED') { GDrive.signOut(); Modal.hide(); showToast('登入已過期，請重新登入', 3000); this.render(container); }
+              if (err.message === 'TOKEN_EXPIRED') { Modal.hide(); showToast('需要 Google 重新確認授權，請再按一次操作', 3500); this.render(container); }
               else { showToast('下載失敗：' + err.message, 3000); Modal.hide(); }
             }
           });
         });
       } catch(err) {
         if (err.message === 'NOT_SIGNED_IN')   showToast('請先登入 Google');
-        else if (err.message === 'TOKEN_EXPIRED') { showToast('登入已過期，請重新登入', 3000); GDrive.signOut(); this.render(container); }
+        else if (err.message === 'TOKEN_EXPIRED') { showToast('需要 Google 重新確認授權，請再按一次操作', 3500); this.render(container); }
         else showToast('讀取失敗：' + err.message, 3000);
       }
       if (btn) btn.disabled = false;
@@ -4267,7 +4328,7 @@ Views.settings = {
       if (!btn || !status) return;
       btn.disabled = true;
       status.textContent = '檢查中…';
-      const LOCAL_VER = 'Voc-PWA-V5_1';
+      const LOCAL_VER = 'Voc-PWA-V5_3';
       try {
         // Fetch sw.js from GitHub raw (cache-bust with timestamp)
         const swUrl = './sw.js?t=' + Date.now();
