@@ -1,4 +1,4 @@
-const CACHE_NAME = 'Voc-PWA-V5_3';
+const CACHE_NAME = 'Voc-PWA-V5_4';
 const ASSETS = ['./', './index.html', './style.css', './app.js', './manifest.json', './icon-192.png', './icon-512.png'];
 
 // Install: cache all assets, then immediately activate (no waiting for old tabs)

@@ -1,6 +1,6 @@
 // ===========================
-// 英文單字複習 PWA - app.js V5_3
-// 更新：Google Drive 記住帳號、互動式續權、V5.3 版本更新
+// 英文單字複習 PWA - app.js V5_4
+// 更新：修復資料庫 AI 查詢翻譯、更新 Gemini 模型清單、強化模型 fallback 與 JSON 解析
 // ===========================
 
   // Listen for SW_UPDATED message → prompt user to refresh
@@ -528,7 +528,16 @@ const DB = {
   },
   getApiKey() { return localStorage.getItem('geminiApiKey') || ''; },
   saveApiKey(key) { localStorage.setItem('geminiApiKey', key); },
-  getModel() { return localStorage.getItem('geminiModel') || 'gemini-2.5-flash'; },
+  getModel() {
+    const saved = localStorage.getItem('geminiModel') || '';
+    const validModels = (typeof Gemini !== 'undefined' && Gemini.AVAILABLE_MODELS)
+      ? Gemini.AVAILABLE_MODELS.map(m => m.id)
+      : [];
+    if (saved && (!validModels.length || validModels.includes(saved))) return saved;
+    const fallback = 'gemini-3.5-flash';
+    if (saved && validModels.length && !validModels.includes(saved)) localStorage.setItem('geminiModel', fallback);
+    return fallback;
+  },
   saveModel(m) { localStorage.setItem('geminiModel', m); },
   // ── Google Drive config ──
   getGDriveClientId()  { return localStorage.getItem('gdriveClientId') || ''; },
@@ -771,23 +780,23 @@ const DB = {
 const Gemini = {
   // All selectable models (display name -> API id)
   AVAILABLE_MODELS: [
-    { label: 'Gemini 2.5 Flash',      id: 'gemini-2.5-flash',      tag: '推薦' },
-    { label: 'Gemini 2.5 Flash Lite', id: 'gemini-2.5-flash-lite'  },
-    { label: 'Gemini 2.5 Pro',        id: 'gemini-2.5-pro'         },
-    { label: 'Gemini 2 Flash',        id: 'gemini-2.0-flash'       },
-    { label: 'Gemini 2 Flash Lite',   id: 'gemini-2.0-flash-lite'  },
-    { label: 'Gemini 2 Flash Exp',    id: 'gemini-2.0-flash-exp'   },
-    { label: 'Gemini 3 Flash',        id: 'gemini-3.0-flash'       },
-    { label: 'Gemini 3.1 Pro',        id: 'gemini-3.1-pro'         },
-    { label: 'Gemini 3.1 Flash Lite', id: 'gemini-3.1-flash-lite'  },
+    // Text-generation models available around 2026/05/31 for Gemini API / AI Studio.
+    // Deprecated 2.0 models are intentionally removed because they shut down on 2026/06/01.
+    { label: 'Gemini 3.5 Flash',              id: 'gemini-3.5-flash',              tag: '推薦' },
+    { label: 'Gemini 3.1 Flash-Lite',         id: 'gemini-3.1-flash-lite',         tag: '快速' },
+    { label: 'Gemini 3.1 Pro Preview',        id: 'gemini-3.1-pro-preview',        tag: '高階' },
+    { label: 'Gemini Flash Latest',           id: 'gemini-flash-latest'            },
+    { label: 'Gemini Pro Latest',             id: 'gemini-pro-latest'              },
+    { label: 'Gemini 2.5 Flash',              id: 'gemini-2.5-flash'               },
+    { label: 'Gemini 2.5 Flash-Lite',         id: 'gemini-2.5-flash-lite'          },
+    { label: 'Gemini 2.5 Pro',                id: 'gemini-2.5-pro'                 },
   ],
 
   // Returns model list with user-selected model first, then the rest as fallback
   _getModelList() {
     const selected = DB.getModel();
     const ids = this.AVAILABLE_MODELS.map(m => m.id);
-    const rest = ids.filter(id => id !== selected);
-    return [selected, ...rest];
+    return [...new Set([selected, ...ids])].filter(Boolean);
   },
 
   // Extract the actual response text, skipping "thought" parts from thinking models
@@ -838,9 +847,13 @@ const Gemini = {
     if (!res.ok) {
       let errMsg = `HTTP ${res.status}`;
       try { const d = await res.json(); errMsg = d.error?.message || errMsg; } catch {}
-      // 429=quota, 503=unavailable, 404=model not found → try next model
+      const lower = String(errMsg).toLowerCase();
       const err = new Error(errMsg);
-      err.fallback = (res.status === 429 || res.status === 503 || res.status === 404);
+      // Try the next model for unavailable/retired/quota/preview-permission issues,
+      // but keep API-key/auth errors visible so the user can fix settings.
+      const apiKeyProblem = lower.includes('api key') || lower.includes('apikey') || lower.includes('permission denied') || lower.includes('authentication');
+      const modelProblem = lower.includes('model') || lower.includes('not found') || lower.includes('not supported') || lower.includes('deprecated') || lower.includes('quota') || lower.includes('rate limit') || lower.includes('unavailable');
+      err.fallback = !apiKeyProblem && (res.status === 404 || res.status === 429 || res.status === 503 || (res.status === 400 && modelProblem));
       throw err;
     }
     const data = await res.json();
@@ -1013,7 +1026,11 @@ If the word does not exist or is invalid, return: []`;
 
     const body = JSON.stringify({
       contents: [{ parts: [{ text: prompt }] }],
-      generationConfig: { temperature: 0.1, maxOutputTokens: 1000 }
+      generationConfig: {
+        temperature: 0.1,
+        maxOutputTokens: 1200,
+        responseMimeType: 'application/json'
+      }
     });
 
     let lastErr = null;
@@ -1021,15 +1038,24 @@ If the word does not exist or is invalid, return: []`;
       try {
         const raw = await this._callModel(model, body, apiKey);
         if (!raw) { lastErr = new Error('EMPTY_RESPONSE'); continue; }
-        // Strip markdown fences and thinking tags
-        let text = raw
+        // Strip markdown fences/thinking tags and extract the first JSON array.
+        let text = String(raw)
           .replace(/<thinking>[\s\S]*?<\/thinking>/gi, '')
-          .replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/, '')
+          .replace(/^\s*```(?:json)?\s*/i, '')
+          .replace(/\s*```\s*$/i, '')
           .trim();
         const start = text.indexOf('['), end = text.lastIndexOf(']');
-        if (start === -1 || end === -1) { lastErr = new Error('PARSE_ERROR'); continue; }
+        if (start === -1 || end === -1 || end <= start) { lastErr = new Error('PARSE_ERROR'); continue; }
         const arr = JSON.parse(text.slice(start, end + 1));
-        if (Array.isArray(arr)) return arr;
+        if (Array.isArray(arr)) {
+          return arr.map(item => ({
+            english:  String(item.english || word || '').trim().toLowerCase(),
+            phonetic: String(item.phonetic || '').replace(/^\/+|\/+$/g, '').trim(),
+            pos:      String(item.pos || '').trim(),
+            chinese:  String(item.chinese || '').trim(),
+            example:  String(item.example || '').trim()
+          })).filter(item => item.english && item.chinese);
+        }
         lastErr = new Error('NOT_ARRAY');
       } catch(err) {
         if (err.message === 'NETWORK_ERROR') throw err;
@@ -1246,7 +1272,7 @@ const GDrive = {
       essayHistory: DB.getEssayHistory(),
       aiAskHistory: DB.getAiAskHistory(),
       updatedAt:    new Date().toISOString(),
-      appVersion:   'V5.3'
+      appVersion:   'V5.4'
     };
   },
 
@@ -1263,7 +1289,7 @@ const GDrive = {
       stats:     (data.history||[]).length,
       essay:     (data.essayHistory||[]).reduce((s,h)=>s+(h.sessions||[]).length,0),
       aiAsk:     (data.aiAskHistory||[]).length,
-      version:   'V5.3'
+      version:   'V5.4'
     };
     const metadata = { name: fileName, mimeType: 'application/json', description: JSON.stringify(summary), ...(folderId ? { parents: [folderId] } : {}) };
     const body = '--' + boundary + '\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n'
@@ -2392,10 +2418,13 @@ Views.database = {
         renderAIResults(entries);
       } catch(err) {
         let msg = '查詢失敗，請稍後再試';
-        if (err.message === 'NO_API_KEY') msg = '請先在設定頁填入 Gemini API Key';
-        else if (err.message === 'NETWORK_ERROR') msg = '網路錯誤，請確認連線';
-        else if (err.message?.includes('API_KEY_INVALID') || err.message?.includes('invalid')) msg = 'API Key 無效，請至設定頁確認';
-        aiResults.innerHTML = `<div class="ecdict-no-result">${msg}</div>`;
+        const detail = String(err?.message || '');
+        if (detail === 'NO_API_KEY') msg = '請先在設定頁填入 Gemini API Key';
+        else if (detail === 'NETWORK_ERROR') msg = '網路錯誤，請確認連線';
+        else if (/api key|apikey|invalid|permission|authentication/i.test(detail)) msg = 'API Key 無效或權限不足，請至設定頁確認';
+        else if (/quota|rate limit/i.test(detail)) msg = '模型配額或速率限制已滿，請稍後再試或更換模型';
+        else if (/model|not found|not supported|deprecated/i.test(detail)) msg = '目前模型不可用，已嘗試 fallback；請到設定頁改選其他模型';
+        aiResults.innerHTML = `<div class="ecdict-no-result">${msg}${detail && detail !== msg ? `<br><span style="font-size:11px;opacity:.65">${detail.replace(/[<>]/g,'')}</span>` : ''}</div>`;
       } finally {
         aiSearchBtn && (aiSearchBtn.disabled = false);
       }
@@ -3974,7 +4003,7 @@ Views.settings = {
         </div>
         <div class="settings-card" style="text-align:center">
           <div style="color:var(--text-muted);font-size:13px;margin-bottom:12px">
-            英文單字複習 PWA &nbsp;·&nbsp; <strong style="color:var(--text-primary)">V5_3</strong>
+            英文單字複習 PWA &nbsp;·&nbsp; <strong style="color:var(--text-primary)">V5_4</strong>
           </div>
           <button class="btn-secondary" id="check-update-btn" style="width:100%;margin-bottom:8px">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px;margin-right:6px"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
@@ -4328,7 +4357,7 @@ Views.settings = {
       if (!btn || !status) return;
       btn.disabled = true;
       status.textContent = '檢查中…';
-      const LOCAL_VER = 'Voc-PWA-V5_3';
+      const LOCAL_VER = 'Voc-PWA-V5_4';
       try {
         // Fetch sw.js from GitHub raw (cache-bust with timestamp)
         const swUrl = './sw.js?t=' + Date.now();
