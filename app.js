@@ -1,6 +1,6 @@
 // ===========================
-// 英文單字複習 PWA - app.js V5_4
-// 更新：修復資料庫 AI 查詢翻譯、更新 Gemini 模型清單、強化模型 fallback 與 JSON 解析
+// 英文單字複習 PWA - app.js V5_5
+// 更新：修復 Gemini 地區限制時資料庫 AI 查詢失敗，加入公開字典/翻譯備援，更新模型清單與錯誤提示
 // ===========================
 
   // Listen for SW_UPDATED message → prompt user to refresh
@@ -780,8 +780,8 @@ const DB = {
 const Gemini = {
   // All selectable models (display name -> API id)
   AVAILABLE_MODELS: [
-    // Text-generation models available around 2026/05/31 for Gemini API / AI Studio.
-    // Deprecated 2.0 models are intentionally removed because they shut down on 2026/06/01.
+    // Text-generation models available in Gemini API / AI Studio around 2026/05/31.
+    // Keep stable low-latency models first; deprecated/shut-down 2.0 and preview-only retired models are removed.
     { label: 'Gemini 3.5 Flash',              id: 'gemini-3.5-flash',              tag: '推薦' },
     { label: 'Gemini 3.1 Flash-Lite',         id: 'gemini-3.1-flash-lite',         tag: '快速' },
     { label: 'Gemini 3.1 Pro Preview',        id: 'gemini-3.1-pro-preview',        tag: '高階' },
@@ -1006,6 +1006,77 @@ ZH: [繁體中文 translation]`;
     throw lastErr || new Error('API_ERROR');
   },
 
+  _isLocationError(err) {
+    return /user location is not supported|location.*not supported|region.*not supported|failed_precondition/i.test(String(err?.message || err || ''));
+  },
+
+  _isAuthError(err) {
+    return /api key|apikey|invalid|permission denied|authentication|unauthenticated/i.test(String(err?.message || err || ''));
+  },
+
+  _normalizePos(pos) {
+    const map = {
+      noun: 'n.', verb: 'v.', adjective: 'adj.', adverb: 'adv.', preposition: 'prep.', conjunction: 'conj.',
+      pronoun: 'pron.', auxiliary: 'aux.', numeral: 'num.', interjection: 'interj.'
+    };
+    const key = String(pos || '').toLowerCase().trim();
+    return map[key] || key.replace(/\.$/, '') + (key ? '.' : '');
+  },
+
+  async _translateWithPublicService(text) {
+    const q = String(text || '').trim();
+    if (!q) return '';
+    const endpoints = [
+      `https://api.mymemory.translated.net/get?q=${encodeURIComponent(q)}&langpair=en|zh-TW`,
+      `https://api.mymemory.translated.net/get?q=${encodeURIComponent(q)}&langpair=en|zh-CN`
+    ];
+    for (const url of endpoints) {
+      try {
+        const res = await fetch(url, { method: 'GET' });
+        if (!res.ok) continue;
+        const data = await res.json();
+        const translated = data?.responseData?.translatedText || data?.matches?.find(m => m?.translation)?.translation || '';
+        const cleaned = String(translated).replace(/&quot;/g, '"').replace(/&#39;/g, "'").trim();
+        if (cleaned && cleaned.toLowerCase() !== q.toLowerCase()) return cleaned;
+      } catch {}
+    }
+    return '';
+  },
+
+  async _lookupWordPublicFallback(word) {
+    const cleanWord = String(word || '').trim().toLowerCase();
+    if (!cleanWord) return [];
+    let dict = null;
+    try {
+      const res = await fetch(`https://api.dictionaryapi.dev/api/v2/entries/en/${encodeURIComponent(cleanWord)}`);
+      if (res.ok) dict = await res.json();
+    } catch {}
+
+    const entries = [];
+    const first = Array.isArray(dict) ? dict[0] : null;
+    const phonetic = (first?.phonetic || first?.phonetics?.find(p => p?.text)?.text || '').replace(/^\/+|\/+$/g, '').trim();
+    const meanings = Array.isArray(first?.meanings) ? first.meanings : [];
+    for (const meaning of meanings.slice(0, 6)) {
+      const def = meaning?.definitions?.find(d => d?.definition)?.definition || '';
+      const example = meaning?.definitions?.find(d => d?.example)?.example || '';
+      const zh = await this._translateWithPublicService(def || cleanWord);
+      entries.push({
+        english: cleanWord,
+        phonetic,
+        pos: this._normalizePos(meaning?.partOfSpeech),
+        chinese: (zh || await this._translateWithPublicService(cleanWord) || '公開字典查詢結果').replace(/；\s*$/,'').slice(0, 60),
+        example: String(example || '').slice(0, 120),
+        source: 'public-fallback'
+      });
+    }
+
+    if (!entries.length) {
+      const zh = await this._translateWithPublicService(cleanWord);
+      if (zh) entries.push({ english: cleanWord, phonetic: '', pos: '', chinese: zh.slice(0, 60), example: '', source: 'public-fallback' });
+    }
+    return entries.filter(e => e.english && e.chinese);
+  },
+
   // Look up a single word via AI and return all POS senses as structured JSON
   async lookupWord(word) {
     const apiKey = DB.getApiKey();
@@ -1061,6 +1132,17 @@ If the word does not exist or is invalid, return: []`;
         if (err.message === 'NETWORK_ERROR') throw err;
         if (err.fallback) { lastErr = err; continue; }
         lastErr = err;
+      }
+    }
+    // Database lookup should remain useful even when Gemini is blocked by network/region, model availability, quota, or parsing issues.
+    // Do not hide true API-key/auth problems, because those require settings changes.
+    if (!this._isAuthError(lastErr)) {
+      const fallbackEntries = await this._lookupWordPublicFallback(word);
+      if (fallbackEntries.length) return fallbackEntries;
+      if (this._isLocationError(lastErr)) {
+        const e = new Error('REGION_UNSUPPORTED_NO_FALLBACK');
+        e.originalMessage = String(lastErr?.message || '');
+        throw e;
       }
     }
     throw lastErr || new Error('API_ERROR');
@@ -1272,7 +1354,7 @@ const GDrive = {
       essayHistory: DB.getEssayHistory(),
       aiAskHistory: DB.getAiAskHistory(),
       updatedAt:    new Date().toISOString(),
-      appVersion:   'V5.4'
+      appVersion:   'V5.5'
     };
   },
 
@@ -1289,7 +1371,7 @@ const GDrive = {
       stats:     (data.history||[]).length,
       essay:     (data.essayHistory||[]).reduce((s,h)=>s+(h.sessions||[]).length,0),
       aiAsk:     (data.aiAskHistory||[]).length,
-      version:   'V5.4'
+      version:   'V5.5'
     };
     const metadata = { name: fileName, mimeType: 'application/json', description: JSON.stringify(summary), ...(folderId ? { parents: [folderId] } : {}) };
     const body = '--' + boundary + '\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n'
@@ -2423,6 +2505,7 @@ Views.database = {
         else if (detail === 'NETWORK_ERROR') msg = '網路錯誤，請確認連線';
         else if (/api key|apikey|invalid|permission|authentication/i.test(detail)) msg = 'API Key 無效或權限不足，請至設定頁確認';
         else if (/quota|rate limit/i.test(detail)) msg = '模型配額或速率限制已滿，請稍後再試或更換模型';
+        else if (/user location is not supported|region|location|failed_precondition|REGION_UNSUPPORTED/i.test(detail)) msg = 'Gemini API 受目前網路/地區限制，已改用公開字典與翻譯備援；若仍失敗，請改用可支援 Gemini API 的網路或在設定頁更換 API Key';
         else if (/model|not found|not supported|deprecated/i.test(detail)) msg = '目前模型不可用，已嘗試 fallback；請到設定頁改選其他模型';
         aiResults.innerHTML = `<div class="ecdict-no-result">${msg}${detail && detail !== msg ? `<br><span style="font-size:11px;opacity:.65">${detail.replace(/[<>]/g,'')}</span>` : ''}</div>`;
       } finally {
@@ -4003,7 +4086,7 @@ Views.settings = {
         </div>
         <div class="settings-card" style="text-align:center">
           <div style="color:var(--text-muted);font-size:13px;margin-bottom:12px">
-            英文單字複習 PWA &nbsp;·&nbsp; <strong style="color:var(--text-primary)">V5_4</strong>
+            英文單字複習 PWA &nbsp;·&nbsp; <strong style="color:var(--text-primary)">V5_5</strong>
           </div>
           <button class="btn-secondary" id="check-update-btn" style="width:100%;margin-bottom:8px">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px;margin-right:6px"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
@@ -4357,7 +4440,7 @@ Views.settings = {
       if (!btn || !status) return;
       btn.disabled = true;
       status.textContent = '檢查中…';
-      const LOCAL_VER = 'Voc-PWA-V5_4';
+      const LOCAL_VER = 'Voc-PWA-V5_5';
       try {
         // Fetch sw.js from GitHub raw (cache-bust with timestamp)
         const swUrl = './sw.js?t=' + Date.now();
