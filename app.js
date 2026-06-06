@@ -1,17 +1,22 @@
 // ===========================
-// 英文單字複習 PWA - app.js V5_5
-// 更新：修復 Gemini 地區限制時資料庫 AI 查詢失敗，加入公開字典/翻譯備援，更新模型清單與錯誤提示
+// 英文單字複習 PWA - app.js V6_0
+// 更新：練習模式輸入效能優化，降低單字拼寫 key in 卡頓與延遲
 // ===========================
 
-  // Listen for SW_UPDATED message → prompt user to refresh
+const APP_VERSION = 'V6_0';
+const APP_DISPLAY_VERSION = 'V6.0';
+const APP_CACHE_VERSION = 'Voc-PWA-V6_0';
+
+// Register Service Worker only when supported (prevents errors in unsupported browsers / webviews).
+if ('serviceWorker' in navigator) {
   navigator.serviceWorker.addEventListener('message', e => {
     if (e.data?.type === 'SW_UPDATED') {
       setTimeout(() => showToast('🔄 已更新至最新版本', 3500), 500);
     }
   });
-
-  if ('serviceWorker' in navigator) {
-  navigator.serviceWorker.register('./sw.js').catch(() => {});
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('./sw.js').catch(() => {});
+  });
 }
 
 // ===== Web Audio Sound Effects =====
@@ -575,16 +580,16 @@ const DB = {
   getImportedSentences() { try { return JSON.parse(localStorage.getItem('importedSentences') || '[]'); } catch { return []; } },
   saveImportedSentences(arr) { localStorage.setItem('importedSentences', JSON.stringify(arr)); },
   importSentencesCSV(text) {
-    const lines = text.trim().split('\n');
-    if (lines.length < 2) return { added: 0, total: 0 };
+    const records = this._splitCSVRecords(text.replace(/^\uFEFF/, '').trim());
+    if (records.length < 2) return { added: 0, total: 0 };
     // ── 格式驗證 ──
-    const headerLine = lines[0].replace(/\r/,'').trim().replace(/^\uFEFF/,'').replace(/"/g,'');
+    const headerLine = records[0].replace(/\r/,'').trim().replace(/^\uFEFF/,'').replace(/"/g,'');
     if (headerLine !== this.CSV_HEADERS.sentences) throw new Error('FORMAT_MISMATCH_SENTENCES');
     const existing = this.getImportedSentences();
     const existingKeys = new Set(existing.map(s => s.date + '|' + s.wordEn));
     let added = 0;
-    for (let i = 1; i < lines.length; i++) {
-      const cols = this._parseCSVLine(lines[i]);
+    for (let i = 1; i < records.length; i++) {
+      const cols = this._parseCSVLine(records[i]);
       if (cols.length < 6) continue;
       const date = (cols[0] || '').trim();
       const wordEn = (cols[1] || '').trim().toLowerCase();
@@ -677,14 +682,14 @@ const DB = {
     return [header.join(','), ...rows.map(r => r.join(','))].join('\n');
   },
   importCSV(text) {
-    const lines = text.trim().split('\n');
-    if (lines.length < 2) return { added: 0, skipped: 0 };
+    const records = this._splitCSVRecords(text.replace(/^\uFEFF/, '').trim());
+    if (records.length < 2) return { added: 0, skipped: 0 };
     // ── 格式驗證 ──
-    const headerLine = lines[0].replace(/\r/,'').trim().replace(/^\uFEFF/,'').replace(/"/g,'');
+    const headerLine = records[0].replace(/\r/,'').trim().replace(/^\uFEFF/,'').replace(/"/g,'');
     if (headerLine !== this.CSV_HEADERS.vocab) throw new Error('FORMAT_MISMATCH_VOCAB');
     const words = this.getWords(); let added = 0, skipped = 0;
-    for (let i = 1; i < lines.length; i++) {
-      const cols = this._parseCSVLine(lines[i]);
+    for (let i = 1; i < records.length; i++) {
+      const cols = this._parseCSVLine(records[i]);
       if (cols.length < 3) { skipped++; continue; }
       const english = (cols[0] || '').trim().toLowerCase();
       const partOfSpeech = (cols[1] || '').trim();
@@ -715,17 +720,17 @@ const DB = {
   },
   // Stats CSV import (merge into existing history)
   importStatsCSV(text) {
-    const lines = text.trim().split('\n');
-    if (lines.length < 2) return { added: 0, updated: 0 };
+    const records = this._splitCSVRecords(text.replace(/^\uFEFF/, '').trim());
+    if (records.length < 2) return { added: 0, updated: 0 };
     // ── 格式驗證 ──
-    const headerLine = lines[0].replace(/\r/,'').trim().replace(/^\uFEFF/,'').replace(/"/g,'');
+    const headerLine = records[0].replace(/\r/,'').trim().replace(/^\uFEFF/,'').replace(/"/g,'');
     if (headerLine !== this.CSV_HEADERS.stats) throw new Error('FORMAT_MISMATCH_STATS');
     const history = this.getHistory();
     const dataMap = {};
     history.forEach(h => { dataMap[h.date] = h; });
     let added = 0, updated = 0;
-    for (let i = 1; i < lines.length; i++) {
-      const cols = this._parseCSVLine(lines[i]);
+    for (let i = 1; i < records.length; i++) {
+      const cols = this._parseCSVLine(records[i]);
       if (cols.length < 4) continue;
       const date = (cols[0]||'').trim();
       const total = parseInt(cols[1])||0;
@@ -780,16 +785,15 @@ const DB = {
 const Gemini = {
   // All selectable models (display name -> API id)
   AVAILABLE_MODELS: [
-    // Text-generation models available in Gemini API / AI Studio around 2026/05/31.
-    // Keep stable low-latency models first; deprecated/shut-down 2.0 and preview-only retired models are removed.
+    // Text-generation models available in Gemini API / AI Studio as of 2026/06.
+    // Removed retired preview/latest aliases; keep stable low-latency models first.
     { label: 'Gemini 3.5 Flash',              id: 'gemini-3.5-flash',              tag: '推薦' },
     { label: 'Gemini 3.1 Flash-Lite',         id: 'gemini-3.1-flash-lite',         tag: '快速' },
+    { label: 'Gemini 3 Flash Preview',        id: 'gemini-3-flash-preview',        tag: 'Preview' },
     { label: 'Gemini 3.1 Pro Preview',        id: 'gemini-3.1-pro-preview',        tag: '高階' },
-    { label: 'Gemini Flash Latest',           id: 'gemini-flash-latest'            },
-    { label: 'Gemini Pro Latest',             id: 'gemini-pro-latest'              },
-    { label: 'Gemini 2.5 Flash',              id: 'gemini-2.5-flash'               },
-    { label: 'Gemini 2.5 Flash-Lite',         id: 'gemini-2.5-flash-lite'          },
-    { label: 'Gemini 2.5 Pro',                id: 'gemini-2.5-pro'                 },
+    { label: 'Gemini 2.5 Flash',              id: 'gemini-2.5-flash',              tag: '備援' },
+    { label: 'Gemini 2.5 Flash-Lite',         id: 'gemini-2.5-flash-lite',         tag: '備援' },
+    { label: 'Gemini 2.5 Pro',                id: 'gemini-2.5-pro',                tag: '備援' },
   ],
 
   // Returns model list with user-selected model first, then the rest as fallback
@@ -1354,7 +1358,7 @@ const GDrive = {
       essayHistory: DB.getEssayHistory(),
       aiAskHistory: DB.getAiAskHistory(),
       updatedAt:    new Date().toISOString(),
-      appVersion:   'V5.5'
+      appVersion:   APP_DISPLAY_VERSION
     };
   },
 
@@ -1371,7 +1375,7 @@ const GDrive = {
       stats:     (data.history||[]).length,
       essay:     (data.essayHistory||[]).reduce((s,h)=>s+(h.sessions||[]).length,0),
       aiAsk:     (data.aiAskHistory||[]).length,
-      version:   'V5.5'
+      version:   APP_DISPLAY_VERSION
     };
     const metadata = { name: fileName, mimeType: 'application/json', description: JSON.stringify(summary), ...(folderId ? { parents: [folderId] } : {}) };
     const body = '--' + boundary + '\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n'
@@ -1432,7 +1436,7 @@ const GDrive = {
       if (Array.isArray(data.aiAskHistory)) localStorage.setItem('aiAskHistory',      JSON.stringify(data.aiAskHistory));
     } else {
       const lw = DB.getWords(); const cw = data.words || [];
-      const merged = [...lw]; cw.forEach(w => { if (!merged.find(x => x.english === w.english)) merged.push(w); });
+      const merged = [...lw]; cw.forEach(w => { const key = String(w.english || w.wordEn || '').toLowerCase(); if (key && !merged.find(x => String(x.english || x.wordEn || '').toLowerCase() === key)) merged.push(w); });
       localStorage.setItem('vocabWords', JSON.stringify(merged));
       const lh = DB.getHistory(); const ch = data.history || []; const hm = {};
       [...lh, ...ch].forEach(h => { if (!hm[h.date] || h.total > hm[h.date].total) hm[h.date] = h; });
@@ -1471,6 +1475,16 @@ function showToast(msg, duration = 2200) {
   t.textContent = msg; t.classList.add('show');
   setTimeout(() => t.classList.remove('show'), duration);
 }
+function escapeHTML(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+function nl2br(value) { return escapeHTML(value).replace(/\n/g, '<br>'); }
+function escapeAttr(value) { return escapeHTML(value).replace(/`/g, '&#96;'); }
 const Modal = {
   show(html) {
     const o = document.getElementById('modal-overlay');
@@ -1493,17 +1507,24 @@ function selectWords(count, mode, boostedIds) {
   for(const w of shuffled) { if(!usedIds.has(w.id)){ usedIds.add(w.id); selected.push(w); if(selected.length>=count)break;} }
   return selected;
 }
+function escapeRegex(value) { return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
 function highlightEn(text, word) {
-  if (!word || !text) return text;
-  return text.replace(new RegExp(`(${word.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')})`, 'gi'), '<span class="hl-en">$1</span>');
+  const safeText = escapeHTML(text);
+  if (!word || !safeText) return safeText;
+  const safeWord = escapeHTML(word);
+  return safeText.replace(new RegExp(`(${escapeRegex(safeWord)})`, 'gi'), '<span class="hl-en">$1</span>');
 }
 function highlightZh(text, wordZh) {
-  if (!wordZh || !text) return text;
-  const tokens = wordZh.split(/[、，,；;／/\s]+/).map(t => t.replace(/[（(）)【】「」『』""''<>]/g,'').trim()).filter(t => t.length >= 2);
-  if (!tokens.length) return text;
+  const safeText = escapeHTML(text);
+  if (!wordZh || !safeText) return safeText;
+  const tokens = String(wordZh).split(/[、，,；;／/\s]+/)
+    .map(t => t.replace(/[（(）)【】「」『』""''<>]/g,'').trim())
+    .filter(t => t.length >= 2)
+    .map(t => escapeHTML(t));
+  if (!tokens.length) return safeText;
   tokens.sort((a,b) => b.length - a.length);
-  const pattern = tokens.map(t => t.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')).join('|');
-  return text.replace(new RegExp(`(${pattern})`, 'g'), '<span class="hl-zh">$1</span>');
+  const pattern = tokens.map(t => escapeRegex(t)).join('|');
+  return safeText.replace(new RegExp(`(${pattern})`, 'g'), '<span class="hl-zh">$1</span>');
 }
 const TTS = {
   _synth: window.speechSynthesis || null,
@@ -1614,7 +1635,7 @@ Views.home = {
           </div>
           <div class="menu-card" data-nav="settings">
             <div class="menu-icon" style="background:#f0e8ff"><svg viewBox="0 0 24 24" fill="none" stroke="#7c3aed" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></div>
-            <div><div class="menu-card-title">設定</div><div class="menu-card-sub">API Key 與例句匯入</div><div class="menu-card-ver">版本別：V9_7</div></div>
+            <div><div class="menu-card-title">設定</div><div class="menu-card-sub">API Key 與例句匯入</div><div class="menu-card-ver">版本別：${APP_VERSION}</div></div>
           </div>
         </div>
         <div class="sentence-log-section">
@@ -1673,7 +1694,7 @@ Views.home = {
         else if (m.includes('429')) errText = '⏳ 請求過於頻繁，請稍後再試';
         else errText = '⚠️ API 暫時無法使用，請稍後重試';
       }
-      heroContent.innerHTML = `<div style="font-size:13px;opacity:0.85;line-height:1.6">${errText}<br><span style="font-size:11px;opacity:0.6">點右上角 ↻ 重試</span></div>`;
+      heroContent.innerHTML = `<div style="font-size:13px;opacity:0.85;line-height:1.6">${escapeHTML(errText)}<br><span style="font-size:11px;opacity:0.6">點右上角 ↻ 重試</span></div>`;
     }
   },
   displaySentence(entry) {
@@ -1687,7 +1708,7 @@ Views.home = {
         <div>${highlightEn(entry.en, entry.wordEn)}</div>
         <span class="zh-text">${highlightZh(entry.zh, entry.wordZh)}</span>
         <div style="margin-top:8px;display:flex;align-items:center;gap:6px">
-          <span class="log-word-chip" style="margin:0">${entry.wordEn} <span style="opacity:0.6;font-size:10px">${entry.wordPos||''}</span></span>
+          <span class="log-word-chip" style="margin:0">${escapeHTML(entry.wordEn)} <span style="opacity:0.6;font-size:10px">${escapeHTML(entry.wordPos||'')}</span></span>
           ${sourceTag}
         </div>
       </div>`;
@@ -1704,8 +1725,8 @@ Views.home = {
     logContent.innerHTML = `<div class="sentence-log-scroll">${log.map(entry => `
       <div class="log-entry-card">
         <div class="log-entry-header">
-          <span class="log-date">${entry.date}</span>
-          <span class="log-word-chip">${entry.wordEn} <span style="opacity:0.6;font-size:10px">${entry.wordPos||''}</span></span>
+          <span class="log-date">${escapeHTML(entry.date)}</span>
+          <span class="log-word-chip">${escapeHTML(entry.wordEn)} <span style="opacity:0.6;font-size:10px">${escapeHTML(entry.wordPos||'')}</span></span>
           ${entry.source === 'csv' ? `<span class="log-source-csv">CSV</span>` : ''}
         </div>
         <div class="log-entry-en">${highlightEn(entry.en, entry.wordEn)}</div>
@@ -1713,6 +1734,38 @@ Views.home = {
       </div>`).join('')}</div>`;
   }
 };
+
+
+// ===========================
+// PRACTICE MODE SELECTOR — shared by quiz / essay / AI ask
+// ===========================
+function renderPracticeModeSelector(currentMode = 'quiz') {
+  const isQuiz = currentMode === 'quiz';
+  const isEssay = currentMode === 'essay';
+  const isAiAsk = currentMode === 'aiask';
+  return `
+    <div class="practice-mode-bar">
+      <select class="practice-mode-select" id="practice-mode-select" aria-label="選擇練習模式">
+        <option value="quiz" ${isQuiz ? 'selected' : ''}>📝 單字拼寫</option>
+        <option value="essay" ${isEssay ? 'selected' : ''}>✍️ 文章撰寫</option>
+        <option value="aiask" ${isAiAsk ? 'selected' : ''}>💬 AI 詢問</option>
+      </select>
+    </div>`;
+}
+
+function bindPracticeModeSelector(container, currentMode = 'quiz') {
+  const selector = container.querySelector('#practice-mode-select');
+  if (!selector) return;
+  selector.addEventListener('change', (e) => {
+    const mode = e.target.value;
+    if (mode === currentMode) return;
+    Router.essayActive = false;
+    Router.quizActive = false;
+    if (mode === 'essay') Views.essay.render(container);
+    else if (mode === 'aiask') Views.aiAsk.render(container);
+    else Views.practice.render(container);
+  });
+}
 
 // ===========================
 // PRACTICE VIEW
@@ -1725,13 +1778,7 @@ Views.practice = {
     const totalWords = DB.getWords().length;
     container.innerHTML = `
       <div class="section-header"><h1 class="section-title">練習</h1></div>
-      <div class="practice-mode-bar">
-        <select class="practice-mode-select" id="practice-mode-select">
-          <option value="quiz">📝 單字拼寫</option>
-          <option value="essay">✍️ 文章撰寫</option>
-          <option value="aiask">💬 AI 詢問</option>
-        </select>
-      </div>
+      ${renderPracticeModeSelector('quiz')}
       <div class="practice-setup">
         ${totalWords === 0 ? `<div class="no-api-warning"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>資料庫尚無單字，請先新增單字</div>` : ''}
         <div class="option-group">
@@ -1767,12 +1814,7 @@ Views.practice = {
     container.querySelectorAll('[data-mode]').forEach(opt => opt.addEventListener('click', () => {
       container.querySelectorAll('[data-mode]').forEach(o=>o.classList.remove('selected')); opt.classList.add('selected'); state.selectedMode = opt.dataset.mode;
     }));
-    document.getElementById('practice-mode-select')?.addEventListener('change', (e) => {
-      const mode = e.target.value;
-      if (mode === 'essay') Views.essay.render(container);
-      else if (mode === 'aiask') Views.aiAsk.render(container);
-      // quiz = already here, no navigation needed
-    });
+    bindPracticeModeSelector(container, 'quiz');
     container.querySelectorAll('[data-tts-delay]').forEach(btn => {
       btn.addEventListener('click', () => {
         container.querySelectorAll('[data-tts-delay]').forEach(b => b.classList.remove('selected'));
@@ -1811,9 +1853,10 @@ Views.practice = {
     if (!ghost) {
       ghost = document.createElement('input');
       ghost.id = 'quiz-ghost-input';
-      // type="search" suppresses iOS QuickType predictive text bar
-      ghost.type = 'search';
-      ghost.style.cssText = `position:fixed;bottom:calc(var(--nav-height)+20px);left:50%;transform:translateX(-50%);width:1px;height:1px;opacity:0.01;border:none;outline:none;background:transparent;color:transparent;font-size:16px;z-index:50;pointer-events:none;-webkit-appearance:none;`;
+      // Keep a real input focused for the iOS keyboard, but make it visually inert.
+      // type="text" avoids native search-field decoration work while typing.
+      ghost.type = 'text';
+      ghost.style.cssText = `position:fixed;top:0;left:0;width:1px;height:1px;opacity:0;border:none;outline:none;background:transparent;color:transparent;caret-color:transparent;font-size:16px;z-index:-1;pointer-events:none;-webkit-appearance:none;appearance:none;`;
       ghost.setAttribute('autocapitalize','none');
       ghost.setAttribute('autocorrect','off');
       ghost.setAttribute('autocomplete','off');
@@ -1907,71 +1950,87 @@ Views.practice = {
       wrap.appendChild(group);
     });
     const ghost = this._ghost; ghost.value = '';
-    // Clean up previous handlers (only 'input' is used now)
+    // Clean up previous handlers. V6_0 uses beforeinput fast-path + input fallback.
     if (ghost._beforeInputH) { ghost.removeEventListener('beforeinput', ghost._beforeInputH); ghost._beforeInputH = null; }
     if (ghost._inputH)       { ghost.removeEventListener('input', ghost._inputH);             ghost._inputH = null;       }
     if (ghost._keydownH)     { ghost.removeEventListener('keydown', ghost._keydownH);          ghost._keydownH = null;     }
-    // correctStr contains only letters — matches what the user can type
-    let userInput = ''; const maxLen = totalLetters; const correctStr = word.english.replace(/[^a-zA-Z]/g,'').toLowerCase();
-    // Track previous box state to avoid unnecessary DOM writes
+
+    // correctStr contains only letters — matches what the user can type.
+    let userInput = '';
+    const maxLen = totalLetters;
+    const correctStr = word.english.replace(/[^a-zA-Z]/g,'').toLowerCase();
+
+    // Track previous box state to avoid unnecessary DOM writes.
     const prevCls = new Array(allBoxDivs.length).fill('');
     const prevTxt = new Array(allBoxDivs.length).fill('');
-    let prevCursorIdx = -1;
-    const updateVisual = (state = 'default') => {
-      allBoxDivs.forEach((box, i) => {
-        let cls, txt;
-        if (state === 'correct') {
-          cls = 'correct'; txt = correctStr[i] || '';
-        } else if (state === 'wrong') {
-          cls = 'wrong'; txt = userInput[i] || '';
-        } else {
-          if (i < userInput.length)       { cls = 'filled'; txt = userInput[i]; }
-          else if (i === userInput.length) { cls = 'cursor'; txt = ''; }
-          else                             { cls = '';        txt = ''; }
-        }
-        // Only write textContent if changed
-        if (prevTxt[i] !== txt) { box.textContent = txt; prevTxt[i] = txt; }
-        // Only write className if changed
-        if (prevCls[i] !== cls) {
-          // Use base class + modifier via dataset to avoid full className string rebuild
-          box.className = cls ? 'letter-box-vis ' + cls : 'letter-box-vis';
-          prevCls[i] = cls;
-        }
-      });
-      // Cursor-active: single-pass update merged with main loop
-      const newCursor = (state === 'default' && userInput.length < allBoxDivs.length) ? userInput.length : -1;
-      if (newCursor !== prevCursorIdx) {
-        if (prevCursorIdx >= 0 && prevCursorIdx < allBoxDivs.length)
-          allBoxDivs[prevCursorIdx].classList.remove('cursor-active');
-        if (newCursor >= 0) allBoxDivs[newCursor].classList.add('cursor-active');
-        prevCursorIdx = newCursor;
-      }
-    };
-    // ── Input handling ──────────────────────────────────────────────────────────
-    //
-    // ROOT CAUSE OF PREVIOUS BUG:
-    //   iOS with Chinese keyboard in English mode fires beforeinput TWICE per key:
-    //     1) inputType="insertCompositionText"  (intermediate)
-    //     2) inputType="insertFromComposition"  (final committed char)
-    //   The old beforeinput handler processed BOTH, double-counting every letter.
-    //   e.g. typing "cat" produced userInput="cca" → wrong answer every time.
-    //
-    // FIX: Remove beforeinput entirely. Let the browser write to ghost naturally.
-    //   Read result via 'input' event only — one event per committed character,
-    //   works correctly on iOS (all keyboards), Android IME, desktop, and paste.
-    //   No ghost.value writes from JS (avoids the layout-pass lag).
+    let lastRenderedInput = null;
+    let evaluating = false;
 
-    ghost._inputH = () => {
-      if (this.state.showAnswer) return;
-      // Read what the browser committed — filter letters, cap at maxLen
-      const raw = ghost.value.replace(/[^a-zA-Z]/g, '').toLowerCase().slice(0, maxLen);
-      if (raw === userInput) return;  // no change (spurious event)
-      userInput = raw;
-      updateVisual();
-      if (userInput.length < maxLen) return;
-      // All boxes filled — evaluate answer
+    const writeBox = (i, cls, txt) => {
+      if (i < 0 || i >= allBoxDivs.length) return;
+      const box = allBoxDivs[i];
+      if (prevTxt[i] !== txt) { box.textContent = txt; prevTxt[i] = txt; }
+      if (prevCls[i] !== cls) { box.className = cls ? 'letter-box-vis ' + cls : 'letter-box-vis'; prevCls[i] = cls; }
+    };
+
+    const updateDefaultVisual = () => {
+      const previous = lastRenderedInput;
+      const next = userInput;
+
+      // First render: paint all boxes once.
+      if (previous === null) {
+        for (let i = 0; i < allBoxDivs.length; i++) {
+          if (i < next.length) writeBox(i, 'filled', next[i]);
+          else if (i === next.length) writeBox(i, 'cursor cursor-active', '');
+          else writeBox(i, '', '');
+        }
+        lastRenderedInput = next;
+        return;
+      }
+
+      // Incremental render: only update changed letters plus old/new cursor positions.
+      let firstChanged = 0;
+      const minLen = Math.min(previous.length, next.length);
+      while (firstChanged < minLen && previous[firstChanged] === next[firstChanged]) firstChanged++;
+
+      const indices = new Set();
+      const oldCursor = previous.length < allBoxDivs.length ? previous.length : -1;
+      const newCursor = next.length < allBoxDivs.length ? next.length : -1;
+      if (oldCursor >= 0) indices.add(oldCursor);
+      if (newCursor >= 0) indices.add(newCursor);
+      for (let i = firstChanged; i <= Math.max(previous.length, next.length); i++) indices.add(i);
+
+      indices.forEach(i => {
+        if (i < 0 || i >= allBoxDivs.length) return;
+        if (i < next.length) writeBox(i, 'filled', next[i]);
+        else if (i === next.length) writeBox(i, 'cursor cursor-active', '');
+        else writeBox(i, '', '');
+      });
+      lastRenderedInput = next;
+    };
+
+    const updateVisual = (state = 'default') => {
+      if (state === 'correct') {
+        for (let i = 0; i < allBoxDivs.length; i++) writeBox(i, 'correct', correctStr[i] || '');
+        lastRenderedInput = userInput;
+        return;
+      }
+      if (state === 'wrong') {
+        for (let i = 0; i < allBoxDivs.length; i++) writeBox(i, 'wrong', userInput[i] || '');
+        lastRenderedInput = userInput;
+        return;
+      }
+      updateDefaultVisual();
+    };
+
+    const normalizeInput = (value) => (value || '').replace(/[^a-zA-Z]/g, '').toLowerCase().slice(0, maxLen);
+
+    const maybeEvaluate = () => {
+      if (userInput.length < maxLen || evaluating) return;
+      evaluating = true;
       const snapshot = userInput;
       requestAnimationFrame(() => {
+        evaluating = false;
         if (this.state.showAnswer) return;
         if (!this.state.waitingRetype)
           this._checkAnswer(word, snapshot, allBoxDivs, container, updateVisual, correctStr, maxLen);
@@ -1980,22 +2039,89 @@ Views.practice = {
       });
     };
 
-    // _beforeInputH kept as no-op for cleanup API consistency (removed below)
-    ghost._beforeInputH = null;
+    const applyInput = (nextValue, syncGhost = true) => {
+      if (this.state.showAnswer) return;
+      const next = normalizeInput(nextValue);
+      if (next === userInput) {
+        if (syncGhost && ghost.value !== userInput) ghost.value = userInput;
+        return;
+      }
+      userInput = next;
+      if (syncGhost && ghost.value !== userInput) ghost.value = userInput;
+      updateVisual();
+      maybeEvaluate();
+    };
 
-    // keydown: only needed for _enterNextH (added in showNextBtn); backspace is
-    // handled naturally by the browser writing to ghost then firing 'input'.
-    ghost._keydownH = null;
+    // ── Input handling ──────────────────────────────────────────────────────────
+    // V6_0: beforeinput is used as a fast path, so the app updates the letter boxes
+    // before Safari finishes its native input rendering pipeline. To avoid the old
+    // iOS Chinese-keyboard double-letter bug, intermediate insertCompositionText is
+    // ignored and only committed text / deletion is processed. The input event stays
+    // as a fallback for browsers or IME paths that do not allow beforeinput canceling.
+    ghost._beforeInputH = (e) => {
+      if (this.state.showAnswer) return;
+      const type = e.inputType || '';
 
+      // Ignore intermediate IME composition. The committed value arrives later as
+      // insertFromComposition or via the normal input fallback.
+      if (e.isComposing || type === 'insertCompositionText') return;
+
+      if (type === 'deleteContentBackward') {
+        e.preventDefault();
+        applyInput(userInput.slice(0, -1));
+        return;
+      }
+
+      if (type === 'deleteContentForward' || type === 'deleteByCut') {
+        e.preventDefault();
+        return;
+      }
+
+      if (type === 'insertFromPaste') {
+        e.preventDefault();
+        const pasted = e.data || e.clipboardData?.getData?.('text') || e.dataTransfer?.getData?.('text') || '';
+        applyInput(userInput + pasted);
+        return;
+      }
+
+      if (type === 'insertText' || type === 'insertFromComposition' || type === '') {
+        const letters = normalizeInput(e.data || '');
+        if (!letters || userInput.length >= maxLen) {
+          e.preventDefault();
+          if (ghost.value !== userInput) ghost.value = userInput;
+          return;
+        }
+        e.preventDefault();
+        applyInput(userInput + letters);
+      }
+    };
+
+    ghost._inputH = () => {
+      // Fallback path: browser/IME updated the hidden input itself.
+      applyInput(ghost.value, false);
+    };
+
+    // Hardware-keyboard fallback for environments where beforeinput is incomplete.
+    // Guard against double handling: normal mobile input is already covered above.
+    ghost._keydownH = (e) => {
+      if (this.state.showAnswer) return;
+      if (e.key === 'Backspace' && !e.isComposing && e.inputType === undefined && typeof InputEvent === 'undefined') {
+        e.preventDefault();
+        applyInput(userInput.slice(0, -1));
+      }
+    };
+
+    ghost.addEventListener('beforeinput', ghost._beforeInputH, { passive: false });
     ghost.addEventListener('input', ghost._inputH);
+    ghost.addEventListener('keydown', ghost._keydownH);
     ghost.style.pointerEvents = 'auto';
     wrap.style.cursor = 'text';
-    // Use .onclick assignment (not addEventListener) so it never accumulates across buildLetterBoxes calls
-    wrap.onclick = (e) => { e.stopPropagation(); ghost.focus(); };
+    // Use .onclick assignment (not addEventListener) so it never accumulates across buildLetterBoxes calls.
+    wrap.onclick = (e) => { e.stopPropagation(); ghost.focus({ preventScroll: true }); };
     const _qa = document.querySelector('.quiz-area');
-    if (_qa) { _qa.onclick = () => { if (this._ghost) this._ghost.focus(); }; }
+    if (_qa) { _qa.onclick = () => { if (this._ghost) this._ghost.focus({ preventScroll: true }); }; }
     Sound.unlock(); // ensure AudioContext is running before first keystroke
-    ghost.focus(); updateVisual();
+    ghost.focus({ preventScroll: true }); updateVisual();
   },
   // Canonical answer normaliser — strips everything except a-z, lowercases
   _norm(s) { return (s || '').replace(/[^a-zA-Z]/g, '').toLowerCase(); },
@@ -2452,12 +2578,12 @@ Views.database = {
         const alreadyIn = existing.has((e.english||'').toLowerCase());
         return `<div class="ai-result-card" data-idx="${idx}">
           <div class="ai-result-top">
-            <span class="ai-result-word">${e.english}</span>
-            ${e.phonetic ? `<span class="ai-result-phonetic">/${(e.phonetic||'').replace(/^\/+|\/+$/g,'')}/</span>` : ''}
-            <span class="ai-result-pos-badge">${e.pos||''}</span>
+            <span class="ai-result-word">${escapeHTML(e.english)}</span>
+            ${e.phonetic ? `<span class="ai-result-phonetic">/${escapeHTML((e.phonetic||'').replace(/^\/+|\/+$/g,''))}/</span>` : ''}
+            <span class="ai-result-pos-badge">${escapeHTML(e.pos||'')}</span>
           </div>
-          <div class="ai-result-zh">${e.chinese||''}</div>
-          ${e.example ? `<div class="ai-result-example">${e.example}</div>` : ''}
+          <div class="ai-result-zh">${escapeHTML(e.chinese||'')}</div>
+          ${e.example ? `<div class="ai-result-example">${escapeHTML(e.example)}</div>` : ''}
           ${alreadyIn
             ? `<button class="ecdict-add-btn added" disabled>✓ 已在詞庫</button>`
             : `<button class="ecdict-add-btn ai-add-btn" data-idx="${idx}">＋ 加入詞庫</button>`}
@@ -2507,7 +2633,7 @@ Views.database = {
         else if (/quota|rate limit/i.test(detail)) msg = '模型配額或速率限制已滿，請稍後再試或更換模型';
         else if (/user location is not supported|region|location|failed_precondition|REGION_UNSUPPORTED/i.test(detail)) msg = 'Gemini API 受目前網路/地區限制，已改用公開字典與翻譯備援；若仍失敗，請改用可支援 Gemini API 的網路或在設定頁更換 API Key';
         else if (/model|not found|not supported|deprecated/i.test(detail)) msg = '目前模型不可用，已嘗試 fallback；請到設定頁改選其他模型';
-        aiResults.innerHTML = `<div class="ecdict-no-result">${msg}${detail && detail !== msg ? `<br><span style="font-size:11px;opacity:.65">${detail.replace(/[<>]/g,'')}</span>` : ''}</div>`;
+        aiResults.innerHTML = `<div class="ecdict-no-result">${msg}${detail && detail !== msg ? `<br><span style="font-size:11px;opacity:.65">${escapeHTML(detail)}</span>` : ''}</div>`;
       } finally {
         aiSearchBtn && (aiSearchBtn.disabled = false);
       }
@@ -2573,10 +2699,10 @@ Views.database = {
         if (!results.length) { ecdictResults.innerHTML=`<div class="ecdict-no-result">查無結果</div>`; return; }
         const existingWords = new Set(DB.getWords().map(w => w.english));
         ecdictResults.innerHTML = results.map(r => `
-          <div class="ecdict-result-item" data-word="${r.word}" data-pos="${r.pos}" data-zh="${encodeURIComponent(r.chinese)}" data-phonetic="${r.phonetic||''}">
-            <div class="ecdict-result-word">${r.word}${r.phonetic?`<span class="ecdict-result-phonetic">/${r.phonetic}/</span>`:''}</div>
-            <div class="ecdict-result-zh">${r.chinese}</div>
-            ${existingWords.has(r.word)?`<button class="ecdict-add-btn added" disabled>✓ 已在詞庫</button>`:`<button class="ecdict-add-btn" data-add="${r.word}">＋ 加入詞庫</button>`}
+          <div class="ecdict-result-item" data-word="${escapeAttr(r.word)}" data-pos="${escapeAttr(r.pos)}" data-zh="${encodeURIComponent(r.chinese||'')}" data-phonetic="${escapeAttr(r.phonetic||'')}">
+            <div class="ecdict-result-word">${escapeHTML(r.word)}${r.phonetic?`<span class="ecdict-result-phonetic">/${escapeHTML(r.phonetic)}/</span>`:''}</div>
+            <div class="ecdict-result-zh">${escapeHTML(r.chinese)}</div>
+            ${existingWords.has(r.word)?`<button class="ecdict-add-btn added" disabled>✓ 已在詞庫</button>`:`<button class="ecdict-add-btn" data-add="${escapeAttr(r.word)}">＋ 加入詞庫</button>`}
           </div>`).join('');
         const POS_OPTIONS = [
           { code:'n.',     label:'n.     名詞' },
@@ -2871,7 +2997,7 @@ Views.database = {
 };
 
 // ===========================
-// STATS VIEW — with export at bottom
+// STATS VIEW — statistics display; CSV export lives in Settings
 // ===========================
 
 // ===========================
@@ -2896,6 +3022,7 @@ Views.essay = {
         <button class="back-link" id="essay-back-btn">← 返回</button>
         <h1 class="section-title">文章撰寫</h1>
       </div>
+      ${renderPracticeModeSelector('essay')}
       ${!hasKey ? '<div class="no-api-warning">請先在設定頁填入 Gemini API Key</div>' : ''}
 
       <div class="essay-mode-toggle">
@@ -2925,6 +3052,8 @@ Views.essay = {
       <div id="essay-result-area" style="margin-top:16px"></div>
       <div style="height:20px"></div>
     `;
+
+    bindPracticeModeSelector(container, 'essay');
 
     // Mode toggle
     document.getElementById('essay-mode-vocab')?.addEventListener('click', () => {
@@ -3012,8 +3141,8 @@ Views.essay = {
       this._topicZh = picked.zh;
       if (topicBox) {
         topicBox.innerHTML =
-          `<div style="font-weight:700;color:var(--text-primary);line-height:1.5;margin-bottom:5px">${picked.en.replace(/</g,'&lt;')}</div>` +
-          `<div style="font-size:13px;color:var(--text-secondary);line-height:1.5">${picked.zh.replace(/</g,'&lt;')}</div>`;
+          `<div style="font-weight:700;color:var(--text-primary);line-height:1.5;margin-bottom:5px">${escapeHTML(picked.en)}</div>` +
+          `<div style="font-size:13px;color:var(--text-secondary);line-height:1.5">${escapeHTML(picked.zh)}</div>`;
       }
       if (textarea) textarea.disabled = false;
       if (submitBtn) submitBtn.disabled = false;
@@ -3094,8 +3223,8 @@ Views.essay = {
         </div>
         <div id="ai-topic-box" class="essay-ai-topic-box">
           ${hasTopic
-            ? `<div style="font-weight:700;color:var(--text-primary);line-height:1.5;margin-bottom:5px">\${this._topic.replace(/</g,'&lt;')}</div>`
-              + (this._topicZh ? `<div style="font-size:13px;color:var(--text-secondary);line-height:1.5">\${this._topicZh.replace(/</g,'&lt;')}</div>` : '')
+            ? `<div style="font-weight:700;color:var(--text-primary);line-height:1.5;margin-bottom:5px">${escapeHTML(this._topic)}</div>`
+              + (this._topicZh ? `<div style="font-size:13px;color:var(--text-secondary);line-height:1.5">${escapeHTML(this._topicZh)}</div>` : '')
             : '<span style="color:var(--text-muted)">點擊下方按鈕隨機出一道英文寫作題目</span>'}
         </div>
         <button class="btn-secondary" id="essay-gen-topic-btn" style="margin-top:8px;width:100%">
@@ -3142,8 +3271,8 @@ Views.essay = {
     // ── Word check badges ──
     const wordCheckHtml = (fb.wordCheck || words.map(w => ({ word: w.english, used: false, correct: false, note: '' }))).map(w =>
       `<span class="fb-badge ${w.used && w.correct ? 'fb-ok' : w.used ? 'fb-warn' : 'fb-missing'}">
-        ${w.used && w.correct ? '✓' : w.used ? '△' : '✗'} ${w.word}
-        ${w.note ? `<span class="fb-badge-note"> — ${w.note}</span>` : ''}
+        ${w.used && w.correct ? '✓' : w.used ? '△' : '✗'} ${this._escapeHtml(w.word || '')}
+        ${w.note ? `<span class="fb-badge-note"> — ${this._escapeHtml(w.note)}</span>` : ''}
       </span>`).join('');
 
     // ── Annotated essay ──
@@ -3167,17 +3296,17 @@ Views.essay = {
             <span class="err-detail-label err-label-fix">✓ 修正</span>
             <span class="err-detail-fixed">${this._escapeHtml(g.corrected || '')}</span>
           </div>
-          ${g.explanation ? `<div class="err-detail-exp">${g.explanation}</div>` : ''}
+          ${g.explanation ? `<div class="err-detail-exp">${this._escapeHtml(g.explanation)}</div>` : ''}
         </div>`).join('');
 
     // ── Suggestions ──
-    const suggestHtml = (fb.suggestions || []).map(s => `<div class="essay-fb-suggest">💡 ${s}</div>`).join('');
+    const suggestHtml = (fb.suggestions || []).map(s => `<div class="essay-fb-suggest">💡 ${this._escapeHtml(s)}</div>`).join('');
 
     container.innerHTML = `
       <div class="essay-fb-card">
         <div class="essay-fb-score-row-top">
           <div class="essay-fb-score" style="color:${scoreColor}">${fb.score}<span class="essay-score-denom">/10</span></div>
-          <div class="essay-fb-comment">${fb.comment || ''}</div>
+          <div class="essay-fb-comment">${this._escapeHtml(fb.comment || '')}</div>
         </div>
 
         <div class="essay-fb-section-title">📋 單字使用</div>
@@ -3239,6 +3368,7 @@ Views.aiAsk = {
         <button class="back-link" id="aiask-back-btn">← 返回</button>
         <h1 class="section-title">AI 詢問</h1>
       </div>
+      ${renderPracticeModeSelector('aiask')}
 
       ${!hasKey ? '<div class="no-api-warning">請先在設定頁填入 Gemini API Key 才能使用 AI 詢問</div>' : ''}
 
@@ -3247,7 +3377,7 @@ Views.aiAsk = {
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px;flex-shrink:0"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
           提問（英文文法、句子修改、單字用法…）
         </div>
-        <div class="aiask-model-hint">模型：${modelLabel}</div>
+        <div class="aiask-model-hint">模型：${escapeHTML(modelLabel)}</div>
         <textarea class="aiask-textarea" id="aiask-textarea"
           placeholder="e.g. How do I use 'however' correctly? &#10;Or: Please correct my sentence: I goed to the store yesterday."
           ${!hasKey ? 'disabled' : ''}></textarea>
@@ -3270,6 +3400,8 @@ Views.aiAsk = {
       <div id="aiask-history-list"></div>
       <div style="height:20px"></div>
     `;
+
+    bindPracticeModeSelector(container, 'aiask');
 
     document.getElementById('aiask-back-btn')?.addEventListener('click', () => {
       Router.essayActive = false;
@@ -3328,7 +3460,7 @@ Views.aiAsk = {
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:13px;height:13px;flex-shrink:0"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
               AI 回覆
             </div>
-            <div class="aiask-answer-text">${answer.replace(/</g,'&lt;').replace(/\n/g,'<br>')}</div>
+            <div class="aiask-answer-text">${nl2br(answer)}</div>
           </div>`;
 
         if (textarea) textarea.value = '';
@@ -3340,7 +3472,7 @@ Views.aiAsk = {
         let msg = 'AI 回覆失敗，請稍後再試';
         if (err.message === 'NO_API_KEY') msg = '請先在設定頁填入 API Key';
         else if (err.message?.includes('NETWORK_ERROR')) msg = '網路錯誤';
-        resultArea.innerHTML = `<div class="ecdict-no-result">${msg}</div>`;
+        resultArea.innerHTML = `<div class="ecdict-no-result">${escapeHTML(msg)}</div>`;
       } finally {
         submitBtn.disabled = false;
       }
@@ -3374,7 +3506,7 @@ Views.aiAsk = {
       const preview = (e.question||'').slice(0, 70) + ((e.question||'').length > 70 ? '...' : '');
       return `<div class="essay-session-card aiask-card" data-idx="${i}" style="cursor:pointer">
         <div class="essay-session-date">${dateStr}</div>
-        <div style="margin-top:4px;font-size:13px;color:var(--text-primary);line-height:1.5">${preview.replace(/</g,'&lt;')}</div>
+        <div style="margin-top:4px;font-size:13px;color:var(--text-primary);line-height:1.5">${escapeHTML(preview)}</div>
       </div>`;
     }).join('');
 
@@ -3403,12 +3535,12 @@ Views.aiAsk = {
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
         問題
       </div>
-      <div class="settings-card" style="white-space:pre-wrap;font-size:14px;line-height:1.7;margin-bottom:0">${(item.question||'').replace(/</g,'&lt;')}</div>
+      <div class="settings-card" style="white-space:pre-wrap;font-size:14px;line-height:1.7;margin-bottom:0">${escapeHTML(item.question||'')}</div>
       <div class="settings-section-label" style="margin-top:12px">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
         AI 回覆
       </div>
-      <div class="settings-card" style="font-size:14px;line-height:1.8;margin-bottom:0">${(item.answer||'').replace(/</g,'&lt;').replace(/\n/g,'<br>')}</div>
+      <div class="settings-card" style="font-size:14px;line-height:1.8;margin-bottom:0">${nl2br(item.answer||'')}</div>
       <div style="height:20px"></div>`;
     document.getElementById('aiask-detail-back2')?.addEventListener('click', () => this.render(container));
   }
@@ -3442,8 +3574,8 @@ Views.stats = {
         </div>
       </div>
 
-      <!-- ★ 匯出統計區塊 -->
-      <div class="stats-export-card">
+      <!-- ★ 統計摘要：CSV 匯出功能已移至設定頁 -->
+      <div class="stats-summary-card">
         <div class="stats-export-summary">
           <div class="stats-export-item"><div class="stats-export-num">${totalSessions}</div><div class="stats-export-label">練習次數</div></div>
           <div class="stats-export-sep"></div>
@@ -3451,10 +3583,7 @@ Views.stats = {
           <div class="stats-export-sep"></div>
           <div class="stats-export-item"><div class="stats-export-num" style="color:var(--primary)">${overallPct}%</div><div class="stats-export-label">整體正確率</div></div>
         </div>
-        <button class="btn-stats-export" id="export-stats-btn">
-          <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" style="width:18px;height:18px"><rect x="2" y="2" width="20" height="20" rx="2" fill="#5b8dd9" stroke="#3a6bc4" stroke-width="1.5"/><rect x="6" y="2" width="12" height="8" rx="1" fill="#a8c4f0" stroke="#3a6bc4" stroke-width="1.2"/><rect x="9" y="3.5" width="4" height="5" rx="0.5" fill="#3a6bc4"/><rect x="4" y="13" width="16" height="7" rx="1" fill="#d6e8ff" stroke="#3a6bc4" stroke-width="1.2"/></svg>
-          匯出統計資料 CSV
-        </button>
+        <div class="stats-export-note">CSV 匯出請至「設定 → 匯出統計資料」。</div>
       </div>
 
       <div style="height:20px"></div>
@@ -3473,15 +3602,6 @@ Views.stats = {
     }));
     this.updateChart(allHistory);
 
-    // Export stats
-    document.getElementById('export-stats-btn').addEventListener('click', () => {
-      if (!allHistory.length) { showToast('尚無統計資料'); return; }
-      const csv = DB.exportStatsCSV();
-      const blob = new Blob(['\uFEFF'+csv], {type:'text/csv;charset=utf-8;'});
-      const url = URL.createObjectURL(blob); const a = document.createElement('a');
-      a.href=url; a.download=`stats_${todayStr().replace(/\//g,'-')}.csv`; a.click(); URL.revokeObjectURL(url);
-      showToast('✓ 統計資料已匯出');
-    });
   },
   updateChart(allHistory) {
     const labels=[]; const now=new Date();
@@ -3606,12 +3726,13 @@ Views.stats = {
 
     let fb = null; try { fb = s.feedback ? JSON.parse(s.feedback) : null; } catch {}
     const grammar = (fb?.grammar || []).map((g, i) => ({ ...g, idx: i }));
-    const annotatedHtml = s.annotatedHtml ||
-      (s.essay && grammar.length ? Views.essay._buildAnnotatedEssay(s.essay, grammar) : (s.essay||'').replace(/\n/g,'<br>'));
+    const annotatedHtml = s.essay && grammar.length
+      ? Views.essay._buildAnnotatedEssay(s.essay, grammar)
+      : nl2br(s.essay || '');
 
     const scoreColor = fb?.score >= 8 ? 'var(--correct)' : fb?.score >= 5 ? '#f5a623' : 'var(--danger)';
     const wordCheckHtml = (fb?.wordCheck || (s.words||[]).map(w=>({word:w.english,used:false,correct:false}))).map(w =>
-      `<span class="fb-badge ${w.used&&w.correct?'fb-ok':w.used?'fb-warn':'fb-missing'}">${w.used&&w.correct?'✓':'✗'} ${w.word}</span>`
+      `<span class="fb-badge ${w.used&&w.correct?'fb-ok':w.used?'fb-warn':'fb-missing'}">${w.used&&w.correct?'✓':'✗'} ${escapeHTML(w.word || '')}</span>`
     ).join('');
     const hasErrors = grammar.some(g => g.exact && (s.essay||'').includes(g.exact));
     const grammarHtml = grammar.length === 0
@@ -3622,11 +3743,11 @@ Views.stats = {
               <span class="err-detail-num">#${g.idx+1}</span>
               <a class="err-back-link" href="#err-text-${g.idx}">↑ 回到文章</a>
             </div>
-            <div class="err-detail-row"><span class="err-detail-label err-label-wrong">✗ 原文</span><span class="err-detail-orig">${(g.exact||g.original||'').replace(/</g,'&lt;')}</span></div>
-            <div class="err-detail-row"><span class="err-detail-label err-label-fix">✓ 修正</span><span class="err-detail-fixed">${(g.corrected||'').replace(/</g,'&lt;')}</span></div>
-            ${g.explanation?`<div class="err-detail-exp">${g.explanation}</div>`:''}
+            <div class="err-detail-row"><span class="err-detail-label err-label-wrong">✗ 原文</span><span class="err-detail-orig">${escapeHTML(g.exact||g.original||'')}</span></div>
+            <div class="err-detail-row"><span class="err-detail-label err-label-fix">✓ 修正</span><span class="err-detail-fixed">${escapeHTML(g.corrected||'')}</span></div>
+            ${g.explanation?`<div class="err-detail-exp">${nl2br(g.explanation)}</div>`:''}
           </div>`).join('');
-    const suggestHtml = (fb?.suggestions||[]).map(sg => `<div class="essay-fb-suggest">💡 ${sg}</div>`).join('');
+    const suggestHtml = (fb?.suggestions||[]).map(sg => `<div class="essay-fb-suggest">💡 ${nl2br(sg)}</div>`).join('');
     const timeStr = s.ts ? new Date(s.ts).toLocaleTimeString('zh-TW',{hour:'2-digit',minute:'2-digit',second:'2-digit'}) : '';
 
     container.innerHTML = `
@@ -3638,7 +3759,7 @@ Views.stats = {
         ${s.essayMode === 'ai'
           ? '<div class="essay-detail-section-title">📌 題目</div>'
             + '<div style="font-size:14px;line-height:1.7;color:var(--text-primary);margin-bottom:4px;font-style:italic">'
-            + (s.topic||'AI 出題').replace(/</g,'&lt;') + '</div>'
+            + escapeHTML(s.topic||'AI 出題') + '</div>'
             + (wordList ? '<div class="essay-detail-section-title">📖 使用單字</div>'
               + '<div class="essay-fb-badges">' + wordCheckHtml + '</div>' : '')
           : '<div class="essay-detail-section-title">📖 使用單字</div>'
@@ -3655,7 +3776,7 @@ Views.stats = {
             <span>AI 評分</span>
             <span class="essay-detail-score" style="color:${scoreColor}">${fb.score}/10</span>
           </div>
-          <div class="essay-fb-comment">${fb.comment||''}</div>
+          <div class="essay-fb-comment">${nl2br(fb.comment||'')}</div>
           ${grammar.length > 0 ? `
             <div class="essay-detail-section-title">📋 文法詳解（${grammar.length} 處）</div>
             <div class="grammar-detail-list">${grammarHtml}</div>` : '<div class="fb-ok-msg" style="margin-top:12px">✓ 未發現明顯文法錯誤</div>'}
@@ -3745,7 +3866,7 @@ Views.stats = {
         return '<div class="rec-row aiask-card" data-idx="' + i + '">'
           + '<div class="rec-date">' + d2 + '<br>' + t2 + '</div>'
           + '<div class="rec-ord" style="color:var(--text-muted)">—</div>'
-          + '<div class="rec-content">' + preview.replace(/</g,'&lt;') + '</div>'
+          + '<div class="rec-content">' + escapeHTML(preview) + '</div>'
           + '<div class="rec-score" style="color:var(--text-muted)">—</div>'
           + '<div class="rec-arrow">▸</div>'
           + '</div>';
@@ -3787,12 +3908,12 @@ Views.stats = {
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
         問題
       </div>
-      <div class="settings-card" style="white-space:pre-wrap;font-size:14px;line-height:1.7;margin-bottom:0">${(item.question||'').replace(/</g,'&lt;')}</div>
+      <div class="settings-card" style="white-space:pre-wrap;font-size:14px;line-height:1.7;margin-bottom:0">${escapeHTML(item.question||'')}</div>
       <div class="settings-section-label" style="margin-top:12px">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
         AI 回覆
       </div>
-      <div class="settings-card" style="font-size:14px;line-height:1.8;margin-bottom:0">${(item.answer||'').replace(/</g,'&lt;').replace(/\n/g,'<br>')}</div>
+      <div class="settings-card" style="font-size:14px;line-height:1.8;margin-bottom:0">${nl2br(item.answer||'')}</div>
       <div style="height:20px"></div>`;
     document.getElementById('aiask-detail-back')?.addEventListener('click', () => this.renderAiAskStats(container));
   },
@@ -4068,7 +4189,7 @@ Views.settings = {
             <label class="model-dropdown-label">AI 模型</label>
             <select class="model-dropdown-select" id="gemini-model-select">
               ${Gemini.AVAILABLE_MODELS.map(m =>
-                `<option value="${m.id}" ${savedModel===m.id?'selected':''}>${m.label}${m.tag?' ★':''}</option>`
+                `<option value="${escapeHTML(m.id)}" ${savedModel===m.id?'selected':''}>${escapeHTML(m.label)}${m.tag ? '（' + escapeHTML(m.tag) + '）' : ''}</option>`
               ).join('')}
             </select>
           </div>
@@ -4086,7 +4207,7 @@ Views.settings = {
         </div>
         <div class="settings-card" style="text-align:center">
           <div style="color:var(--text-muted);font-size:13px;margin-bottom:12px">
-            英文單字複習 PWA &nbsp;·&nbsp; <strong style="color:var(--text-primary)">V5_5</strong>
+            英文單字複習 PWA &nbsp;·&nbsp; <strong style="color:var(--text-primary)">${APP_VERSION}</strong>
           </div>
           <button class="btn-secondary" id="check-update-btn" style="width:100%;margin-bottom:8px">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px;margin-right:6px"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
@@ -4132,7 +4253,7 @@ Views.settings = {
     document.getElementById('clear-vocab-btn')?.addEventListener('click', () => {
       confirmClear('清除單字資料庫',
         `確定要清除全部 ${totalWords} 個單字嗎？此操作無法復原，建議先匯出備份。`,
-        () => { localStorage.removeItem('words'); showToast('已清除單字資料庫'); this.render(container); });
+        () => { DB.saveWords([]); localStorage.removeItem('boostedWords'); showToast('已清除單字資料庫'); this.render(container); });
     });
 
     // ── 3. 例句 ──
@@ -4440,32 +4561,32 @@ Views.settings = {
       if (!btn || !status) return;
       btn.disabled = true;
       status.textContent = '檢查中…';
-      const LOCAL_VER = 'Voc-PWA-V5_5';
+      const LOCAL_VER = APP_VERSION;
       try {
-        // Fetch sw.js from GitHub raw (cache-bust with timestamp)
-        const swUrl = './sw.js?t=' + Date.now();
-        const r = await fetch(swUrl, { cache: 'no-store' });
+        // Fetch version.json first; it is easier to maintain than parsing sw.js.
+        const versionUrl = './version.json?t=' + Date.now();
+        const r = await fetch(versionUrl, { cache: 'no-store' });
         if (!r.ok) throw new Error('fetch_failed');
-        const text = await r.text();
-        const m = text.match(/CACHE_NAME\s*=\s*['"]([^'"]+)['"]/);
-        if (!m) throw new Error('parse_failed');
-        const remoteVer = m[1];
+        const remoteData = await r.json();
+        const remoteVer = remoteData.version || remoteData.displayVersion || '';
+        const remoteDisplay = remoteData.displayVersion || remoteVer;
+        if (!remoteVer) throw new Error('parse_failed');
         if (remoteVer === LOCAL_VER) {
-          status.textContent = '✓ 已是最新版本（' + LOCAL_VER + '）';
+          status.textContent = '✓ 已是最新版本（' + APP_DISPLAY_VERSION + '）';
         } else {
-          status.innerHTML = '發現新版本：<strong>' + remoteVer + '</strong>　<button id="do-update-btn" style="font-size:12px;padding:2px 10px;border-radius:8px;border:1.5px solid var(--primary);background:var(--primary);color:#fff;cursor:pointer">立即更新</button>';
+          status.innerHTML = '發現新版本：<strong>' + escapeHTML(remoteDisplay) + '</strong>　<button id="do-update-btn" style="font-size:12px;padding:2px 10px;border-radius:8px;border:1.5px solid var(--primary);background:var(--primary);color:#fff;cursor:pointer">立即更新</button>';
           document.getElementById('do-update-btn')?.addEventListener('click', async () => {
             status.textContent = '更新中，請稍候…';
-            // Unregister old SW so new one installs on next reload
             if ('serviceWorker' in navigator) {
               const regs = await navigator.serviceWorker.getRegistrations();
               for (const reg of regs) await reg.unregister();
-              // Clear all caches
+            }
+            if ('caches' in window) {
               const keys = await caches.keys();
               await Promise.all(keys.map(k => caches.delete(k)));
             }
             showToast('✓ 更新完成，重新載入中…', 2000);
-            setTimeout(() => location.reload(true), 1800);
+            setTimeout(() => location.reload(), 1800);
           });
         }
       } catch (e) {
