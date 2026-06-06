@@ -20,9 +20,10 @@
   --shadow-sm: 0 2px 8px rgba(0,0,0,0.06);
 }
 
-* { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+* { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; min-width: 0; }
 
 html, body {
+  width: 100%; max-width: 100%;
   height: 100%; overflow: hidden;
   font-family: 'Nunito', sans-serif;
   background: var(--bg); color: var(--text);
@@ -214,6 +215,7 @@ html, body {
 .word-separator { width:10px; display:flex; align-items:center; justify-content:center; font-size:18px; color:var(--text-muted); }
 
 /* FIX #6: Visual letter boxes (div, not input) */
+.letter-input-wrap { contain: layout paint; }
 .letter-box-vis {
   width: 38px; height: 44px;
   border: 2px solid var(--border);
@@ -228,6 +230,7 @@ html, body {
   color: #3a5048;
   text-transform: lowercase;
   /* No transition on default/filled — keeps typing snappy; transitions only on correct/wrong via specific classes */
+  contain: layout paint style;
   user-select: none;
   -webkit-user-select: none;
 }
@@ -369,7 +372,7 @@ html, body {
 .form-select { width:100%; padding:13px 14px; border:2px solid var(--border); border-radius:var(--radius-sm); background:white; font-family:'Nunito',sans-serif; font-size:16px; font-weight:600; color:var(--text); outline:none; -webkit-appearance:none; appearance:none; background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1l5 5 5-5' stroke='%236b8070' stroke-width='2' fill='none' stroke-linecap='round'/%3E%3C/svg%3E"); background-repeat:no-repeat; background-position:right 14px center; }
 
 /* ===== STATS ===== */
-.stats-period-chips { display:flex; gap:6px; padding:0 12px 12px; overflow-x:auto; -ms-overflow-style:none; scrollbar-width:none; }
+.stats-period-chips { display:flex; flex-wrap:wrap; gap:6px; padding:0 12px 12px; overflow-x:hidden; -ms-overflow-style:none; scrollbar-width:none; }
 .stats-period-chips::-webkit-scrollbar { display:none; }
 .chart-card { background:var(--card-bg); border-radius:var(--radius); padding:16px; margin:0 12px 12px; box-shadow:var(--shadow-sm); }
 .chart-wrapper { position:relative; height:220px; }
@@ -819,26 +822,24 @@ html, body {
   background: var(--border);
   margin: 0 8px;
 }
-.btn-stats-export {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  width: 100%;
-  padding: 13px;
-  background: var(--bg);
-  color: var(--primary);
-  border: 2px solid var(--primary);
-  border-radius: var(--radius-sm);
-  font-family: 'Nunito', sans-serif;
-  font-size: 14px;
-  font-weight: 800;
-  cursor: pointer;
-  transition: background 0.15s, color 0.15s;
+
+/* V5.9: stats page keeps summary only; CSV export lives in Settings. */
+.stats-summary-card {
+  margin: 12px 12px 0;
+  background: var(--card-bg);
+  border-radius: var(--radius);
+  padding: 16px;
+  box-shadow: var(--shadow-sm);
 }
-.btn-stats-export:active {
-  background: var(--primary);
-  color: white;
+.stats-summary-card .stats-export-summary {
+  margin-bottom: 8px;
+}
+.stats-export-note {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text-muted);
+  text-align: center;
+  line-height: 1.5;
 }
 
 /* Settings stats hint */
@@ -1232,7 +1233,7 @@ html, body {
 .essay-words-top { display:flex; align-items:center; justify-content:space-between; margin-bottom:10px; }
 .essay-reroll-inline { background:none; border:1.5px solid var(--border); border-radius:100px; font-family:'Nunito',sans-serif; font-size:12px; font-weight:700; color:var(--text-muted); padding:5px 12px; cursor:pointer; }
 .essay-reroll-inline:active { background:var(--border); }
-.essay-chips-row { display:flex; flex-wrap:nowrap; gap:6px; overflow-x:auto; -webkit-overflow-scrolling:touch; }
+.essay-chips-row { display:flex; flex-wrap:wrap; gap:6px; overflow-x:hidden; -webkit-overflow-scrolling:touch; }
 .essay-chip-pill { display:flex; flex-direction:column; flex:1; gap:3px; background:#f0f7f4; border:1.5px solid #c8e6d8; border-radius:10px; padding:7px 10px; min-width:0; }
 .essay-chip-top { display:flex; align-items:center; gap:5px; }
 .essay-chip-en { font-weight:800; font-size:13px; color:var(--primary-dark); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
@@ -2152,3 +2153,13 @@ a.err-back-link {
   border-bottom: none;
 }
 
+
+
+/* V5.9: iOS PWA horizontal overflow guard */
+#view-container, .settings-card, .card, .home-menu-grid, .essay-fb-card, .aiask-answer-box, .sentence-log-scroll {
+  max-width: 100%;
+}
+.aiask-answer-text, .settings-card, .essay-fb-comment, .essay-fb-suggest, .log-entry-en, .log-entry-zh {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}

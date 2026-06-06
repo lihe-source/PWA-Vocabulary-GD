@@ -1,50 +1,63 @@
-const CACHE_NAME = 'Voc-PWA-V5_5';
-const ASSETS = ['./', './index.html', './style.css', './app.js', './manifest.json', './icon-192.png', './icon-512.png'];
+const CACHE_NAME = 'Voc-PWA-V6_0';
+const ASSETS = [
+  './',
+  './index.html',
+  './style.css',
+  './app.js',
+  './manifest.json',
+  './version.json',
+  './icon-192.png',
+  './icon-512.png'
+];
 
-// Install: cache all assets, then immediately activate (no waiting for old tabs)
-self.addEventListener('install', e => {
-  e.waitUntil(
-    caches.open(CACHE_NAME).then(cache => cache.addAll(ASSETS))
+// Install: cache the app shell, then activate immediately.
+self.addEventListener('install', event => {
+  event.waitUntil(
+    caches.open(CACHE_NAME)
+      .then(cache => cache.addAll(ASSETS))
+      .then(() => self.skipWaiting())
   );
-  self.skipWaiting(); // activate new SW immediately
 });
 
-// Activate: delete ALL old caches, then take control of all open pages right away
-self.addEventListener('activate', e => {
-  e.waitUntil(
+// Activate: delete old app caches, claim clients, then notify open pages.
+self.addEventListener('activate', event => {
+  event.waitUntil(
     caches.keys()
-      .then(keys => Promise.all(
-        keys.filter(k => k !== CACHE_NAME).map(k => caches.delete(k))
-      ))
-      .then(() => self.clients.claim()) // take over all open pages immediately
+      .then(keys => Promise.all(keys.filter(k => k !== CACHE_NAME).map(k => caches.delete(k))))
+      .then(() => self.clients.claim())
+      .then(() => self.clients.matchAll({ type: 'window' }))
+      .then(clients => clients.forEach(client => client.postMessage({ type: 'SW_UPDATED', version: CACHE_NAME })))
   );
-  // Notify all open pages that a new version is active
-  self.clients.matchAll({ type: 'window' }).then(clients => {
-    clients.forEach(client => client.postMessage({ type: 'SW_UPDATED', version: CACHE_NAME }));
-  });
 });
 
-// Fetch: network-first for app files (always try to get latest), cache as fallback
-self.addEventListener('fetch', e => {
-  // Skip non-GET and external API calls — let them go straight to network
-  if (e.request.method !== 'GET') return;
-  if (e.request.url.includes('generativelanguage.googleapis.com')) return;
-  if (e.request.url.includes('googleapis.com')) return;
-  if (e.request.url.includes('accounts.google.com')) return;
-  if (e.request.url.includes('cdn.jsdelivr.net')) return;
-  if (e.request.url.includes('fonts.googleapis.com')) return;
-  if (e.request.url.includes('fonts.gstatic.com')) return;
+// Fetch: same-origin app files use network-first with cache fallback.
+// External APIs/CDNs are never intercepted so Google sign-in, Drive, Gemini, fonts, and CDN libraries stay online-first.
+self.addEventListener('fetch', event => {
+  if (event.request.method !== 'GET') return;
+  const url = new URL(event.request.url);
+  if (url.origin !== self.location.origin) return;
 
-  e.respondWith(
-    fetch(e.request)
+  if (event.request.mode === 'navigate') {
+    event.respondWith(
+      fetch(event.request)
+        .then(response => {
+          if (response.ok) caches.open(CACHE_NAME).then(cache => cache.put('./index.html', response.clone()));
+          return response;
+        })
+        .catch(() => caches.match('./index.html'))
+    );
+    return;
+  }
+
+  event.respondWith(
+    fetch(event.request)
       .then(response => {
-        // Save fresh copy to cache
-        if (response.ok) {
+        if (response && response.ok) {
           const clone = response.clone();
-          caches.open(CACHE_NAME).then(cache => cache.put(e.request, clone));
+          caches.open(CACHE_NAME).then(cache => cache.put(event.request, clone));
         }
         return response;
       })
-      .catch(() => caches.match(e.request)) // offline fallback
+      .catch(() => caches.match(event.request))
   );
 });
