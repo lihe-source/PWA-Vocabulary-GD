@@ -1,11 +1,11 @@
 // ===========================
-// 英文單字複習 PWA - app.js V6_0
-// 更新：練習模式輸入效能優化，降低單字拼寫 key in 卡頓與延遲
+// 英文單字複習 PWA - app.js V6_1
+// 更新：設定頁折疊資訊、順序重排與快速捲動按鈕
 // ===========================
 
-const APP_VERSION = 'V6_0';
-const APP_DISPLAY_VERSION = 'V6.0';
-const APP_CACHE_VERSION = 'Voc-PWA-V6_0';
+const APP_VERSION = 'V6_1';
+const APP_DISPLAY_VERSION = 'V6.1';
+const APP_CACHE_VERSION = 'Voc-PWA-V6_1';
 
 // Register Service Worker only when supported (prevents errors in unsupported browsers / webviews).
 if ('serviceWorker' in navigator) {
@@ -1595,6 +1595,7 @@ const Router = {
     viewDiv.id = `${view}-view`; viewDiv.className = 'view-enter';
     container.appendChild(viewDiv);
     Views[view].render(viewDiv, params);
+    setTimeout(() => window.updateScrollFabs?.(), 0);
   }
 };
 
@@ -1950,7 +1951,7 @@ Views.practice = {
       wrap.appendChild(group);
     });
     const ghost = this._ghost; ghost.value = '';
-    // Clean up previous handlers. V6_0 uses beforeinput fast-path + input fallback.
+    // Clean up previous handlers. V6_1 uses beforeinput fast-path + input fallback.
     if (ghost._beforeInputH) { ghost.removeEventListener('beforeinput', ghost._beforeInputH); ghost._beforeInputH = null; }
     if (ghost._inputH)       { ghost.removeEventListener('input', ghost._inputH);             ghost._inputH = null;       }
     if (ghost._keydownH)     { ghost.removeEventListener('keydown', ghost._keydownH);          ghost._keydownH = null;     }
@@ -2053,7 +2054,7 @@ Views.practice = {
     };
 
     // ── Input handling ──────────────────────────────────────────────────────────
-    // V6_0: beforeinput is used as a fast path, so the app updates the letter boxes
+    // V6_1: beforeinput is used as a fast path, so the app updates the letter boxes
     // before Safari finishes its native input rendering pipeline. To avoid the old
     // iOS Chinese-keyboard double-letter bug, intermediate insertCompositionText is
     // ignored and only committed text / deletion is processed. The input event stays
@@ -3994,124 +3995,14 @@ Views.settings = {
           `}
         </div>
 
-        <!-- 2. 單字資料庫 -->
-        <div class="settings-section-label" style="margin-top:16px">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:15px;height:15px"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>
-          單字資料庫
-        </div>
-        <div class="settings-card">
-          <div class="settings-stat-row">
-            <div class="settings-stat-num">${totalWords}</div>
-            <div class="settings-stat-label">個單字</div>
-          </div>
-          <div class="settings-btn-row">
-            <button class="btn-icon btn-export" id="export-vocab-btn" style="flex:1">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" xmlns="http://www.w3.org/2000/svg"><rect x="2" y="2" width="20" height="20" rx="2" fill="#5b8dd9" stroke="#3a6bc4"/><rect x="6" y="2" width="12" height="8" rx="1" fill="#a8c4f0" stroke="#3a6bc4" stroke-width="1.5"/><rect x="9" y="3.5" width="4" height="5" rx="0.5" fill="#3a6bc4" stroke="none"/><rect x="4" y="13" width="16" height="7" rx="1" fill="#d6e8ff" stroke="#3a6bc4" stroke-width="1.5"/></svg>匯出 CSV
-            </button>
-            <button class="btn-danger-sm" id="clear-vocab-btn">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4h6v2"/></svg>清除全部
-            </button>
-          </div>
-        </div>
-
-        <!-- 3. 每日例句 -->
-        <div class="settings-section-label" style="margin-top:16px">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:15px;height:15px"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
-          每日例句
-        </div>
-        <div class="settings-card">
-          <div class="sentence-stats-row">
-            <div class="sentence-stat-box">
-              <div class="sentence-stat-num">${aiSentences.length}</div>
-              <div class="sentence-stat-label">AI 生成</div>
-            </div>
-            <div class="sentence-stat-box">
-              <div class="sentence-stat-num" style="color:#3366cc">${importedSentences.length}</div>
-              <div class="sentence-stat-label">CSV 匯入</div>
-            </div>
-            <div class="sentence-stat-box">
-              <div class="sentence-stat-num" style="color:#e67e00">${totalSentences}</div>
-              <div class="sentence-stat-label">合計（去重）</div>
-            </div>
-          </div>
-          <div class="settings-btn-row">
-            <button class="btn-icon btn-export" id="export-sentences-btn" style="flex:1">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" xmlns="http://www.w3.org/2000/svg"><rect x="2" y="2" width="20" height="20" rx="2" fill="#5b8dd9" stroke="#3a6bc4"/><rect x="6" y="2" width="12" height="8" rx="1" fill="#a8c4f0" stroke="#3a6bc4" stroke-width="1.5"/><rect x="9" y="3.5" width="4" height="5" rx="0.5" fill="#3a6bc4" stroke="none"/><rect x="4" y="13" width="16" height="7" rx="1" fill="#d6e8ff" stroke="#3a6bc4" stroke-width="1.5"/></svg>匯出 CSV
-            </button>
-            <button class="btn-danger-sm" id="clear-sentences-btn">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4h6v2"/></svg>清除全部
-            </button>
-          </div>
-        </div>
-
-        <!-- 4. 練習統計 -->
-        <div class="settings-section-label" style="margin-top:16px">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:15px;height:15px"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
-          練習統計
-        </div>
-        <div class="settings-card">
-          <div class="settings-stat-row">
-            <div class="settings-stat-num">${totalStats}</div>
-            <div class="settings-stat-label">筆練習記錄</div>
-          </div>
-          <div class="settings-btn-row">
-            <button class="btn-icon btn-export" id="export-stats-settings-btn" style="flex:1">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" xmlns="http://www.w3.org/2000/svg"><rect x="2" y="2" width="20" height="20" rx="2" fill="#5b8dd9" stroke="#3a6bc4"/><rect x="6" y="2" width="12" height="8" rx="1" fill="#a8c4f0" stroke="#3a6bc4" stroke-width="1.5"/><rect x="9" y="3.5" width="4" height="5" rx="0.5" fill="#3a6bc4" stroke="none"/><rect x="4" y="13" width="16" height="7" rx="1" fill="#d6e8ff" stroke="#3a6bc4" stroke-width="1.5"/></svg>匯出 CSV
-            </button>
-            <button class="btn-danger-sm" id="clear-stats-btn">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4h6v2"/></svg>清除全部
-            </button>
-          </div>
-        </div>
-
-        <!-- 4b. 文章撰寫 -->
-        <div class="settings-section-label" style="margin-top:16px">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:15px;height:15px"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4 9.5-9.5z"/></svg>
-          文章撰寫
-        </div>
-        <div class="settings-card">
-          <div class="settings-stat-row">
-            <div class="settings-stat-num">${totalEssay}</div>
-            <div class="settings-stat-label">篇練習記錄</div>
-          </div>
-          <div class="settings-btn-row">
-            <button class="btn-icon btn-export" id="export-essay-btn" style="flex:1">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" xmlns="http://www.w3.org/2000/svg"><rect x="2" y="2" width="20" height="20" rx="2" fill="#5b8dd9" stroke="#3a6bc4"/><rect x="6" y="2" width="12" height="8" rx="1" fill="#a8c4f0" stroke="#3a6bc4" stroke-width="1.5"/><rect x="9" y="3.5" width="4" height="5" rx="0.5" fill="#3a6bc4" stroke="none"/><rect x="4" y="13" width="16" height="7" rx="1" fill="#d6e8ff" stroke="#3a6bc4" stroke-width="1.5"/></svg>匯出 CSV
-            </button>
-            <button class="btn-danger-sm" id="clear-essay-btn">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4h6v2"/></svg>清除全部
-            </button>
-          </div>
-        </div>
-
-        <!-- 4c. AI 詢問 -->
-        <div class="settings-section-label" style="margin-top:16px">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:15px;height:15px"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
-          AI 詢問
-        </div>
-        <div class="settings-card">
-          <div class="settings-stat-row">
-            <div class="settings-stat-num">${totalAiAsk}</div>
-            <div class="settings-stat-label">筆詢問記錄</div>
-          </div>
-          <div class="settings-btn-row">
-            <button class="btn-icon btn-export" id="export-aiask-btn" style="flex:1">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" xmlns="http://www.w3.org/2000/svg"><rect x="2" y="2" width="20" height="20" rx="2" fill="#5b8dd9" stroke="#3a6bc4"/><rect x="6" y="2" width="12" height="8" rx="1" fill="#a8c4f0" stroke="#3a6bc4" stroke-width="1.5"/><rect x="9" y="3.5" width="4" height="5" rx="0.5" fill="#3a6bc4" stroke="none"/><rect x="4" y="13" width="16" height="7" rx="1" fill="#d6e8ff" stroke="#3a6bc4" stroke-width="1.5"/></svg>匯出 CSV
-            </button>
-            <button class="btn-danger-sm" id="clear-aiask-btn">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4h6v2"/></svg>清除全部
-            </button>
-          </div>
-        </div>
-
-        <!-- 5. 一鍵匯出（最底部）-->
+        <!-- 2. 一鍵匯出全部 -->
         <div class="settings-section-label" style="margin-top:16px">
           <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" style="width:15px;height:15px"><rect x="2" y="2" width="20" height="20" rx="2" fill="#5b8dd9" stroke="#3a6bc4" stroke-width="1.5"/><rect x="6" y="2" width="12" height="8" rx="1" fill="#a8c4f0" stroke="#3a6bc4" stroke-width="1.2"/><rect x="9" y="3.5" width="4" height="5" rx="0.5" fill="#3a6bc4"/><rect x="4" y="13" width="16" height="7" rx="1" fill="#d6e8ff" stroke="#3a6bc4" stroke-width="1.2"/></svg>
           一鍵匯出全部
         </div>
         <div class="settings-card">
           <div class="one-click-export-desc">同時匯出單字庫、例句庫、統計資料、文章撰寫、AI 詢問記錄，方便備份或跨裝置移轉。</div>
-          <div class="one-click-summary-grid">
+          <div class="one-click-summary-grid one-click-summary-grid-compact">
             <div class="oc-stat-cell">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>
               <div class="oc-stat-num">${totalWords}</div><div class="oc-stat-label">單字</div>
@@ -4144,6 +4035,147 @@ Views.settings = {
           </button>
           <div class="one-click-import-hint">可選取單字/例句/統計 CSV，或直接選取備份 ZIP 檔一鍵還原</div>
         </div>
+
+        <!-- 3. 折疊資訊：預設收合 -->
+        <div class="settings-section-label settings-collapse-group-label" style="margin-top:16px">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:15px;height:15px"><path d="M3 4h18"/><path d="M3 10h18"/><path d="M3 16h18"/><path d="M3 22h18"/></svg>
+          資料狀態與管理
+        </div>
+
+        <details class="settings-collapsible-card">
+          <summary class="settings-collapse-summary">
+            <span class="settings-collapse-title">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>
+              單字資料庫
+            </span>
+            <span class="settings-collapse-count">${totalWords} 個</span>
+            <span class="settings-collapse-chevron">⌄</span>
+          </summary>
+          <div class="settings-card settings-collapse-body">
+            <div class="settings-stat-row">
+              <div class="settings-stat-num">${totalWords}</div>
+              <div class="settings-stat-label">個單字</div>
+            </div>
+            <div class="settings-btn-row">
+              <button class="btn-icon btn-export" id="export-vocab-btn" style="flex:1">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" xmlns="http://www.w3.org/2000/svg"><rect x="2" y="2" width="20" height="20" rx="2" fill="#5b8dd9" stroke="#3a6bc4"/><rect x="6" y="2" width="12" height="8" rx="1" fill="#a8c4f0" stroke="#3a6bc4" stroke-width="1.5"/><rect x="9" y="3.5" width="4" height="5" rx="0.5" fill="#3a6bc4" stroke="none"/><rect x="4" y="13" width="16" height="7" rx="1" fill="#d6e8ff" stroke="#3a6bc4" stroke-width="1.5"/></svg>匯出 CSV
+              </button>
+              <button class="btn-danger-sm" id="clear-vocab-btn">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4h6v2"/></svg>清除全部
+              </button>
+            </div>
+          </div>
+        </details>
+
+        <details class="settings-collapsible-card">
+          <summary class="settings-collapse-summary">
+            <span class="settings-collapse-title">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+              每日例句
+            </span>
+            <span class="settings-collapse-count">${totalSentences} 筆</span>
+            <span class="settings-collapse-chevron">⌄</span>
+          </summary>
+          <div class="settings-card settings-collapse-body">
+            <div class="sentence-stats-row">
+              <div class="sentence-stat-box">
+                <div class="sentence-stat-num">${aiSentences.length}</div>
+                <div class="sentence-stat-label">AI 生成</div>
+              </div>
+              <div class="sentence-stat-box">
+                <div class="sentence-stat-num" style="color:#3366cc">${importedSentences.length}</div>
+                <div class="sentence-stat-label">CSV 匯入</div>
+              </div>
+              <div class="sentence-stat-box">
+                <div class="sentence-stat-num" style="color:#e67e00">${totalSentences}</div>
+                <div class="sentence-stat-label">合計（去重）</div>
+              </div>
+            </div>
+            <div class="settings-btn-row">
+              <button class="btn-icon btn-export" id="export-sentences-btn" style="flex:1">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" xmlns="http://www.w3.org/2000/svg"><rect x="2" y="2" width="20" height="20" rx="2" fill="#5b8dd9" stroke="#3a6bc4"/><rect x="6" y="2" width="12" height="8" rx="1" fill="#a8c4f0" stroke="#3a6bc4" stroke-width="1.5"/><rect x="9" y="3.5" width="4" height="5" rx="0.5" fill="#3a6bc4" stroke="none"/><rect x="4" y="13" width="16" height="7" rx="1" fill="#d6e8ff" stroke="#3a6bc4" stroke-width="1.5"/></svg>匯出 CSV
+              </button>
+              <button class="btn-danger-sm" id="clear-sentences-btn">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4h6v2"/></svg>清除全部
+              </button>
+            </div>
+          </div>
+        </details>
+
+        <details class="settings-collapsible-card">
+          <summary class="settings-collapse-summary">
+            <span class="settings-collapse-title">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
+              練習統計
+            </span>
+            <span class="settings-collapse-count">${totalStats} 筆</span>
+            <span class="settings-collapse-chevron">⌄</span>
+          </summary>
+          <div class="settings-card settings-collapse-body">
+            <div class="settings-stat-row">
+              <div class="settings-stat-num">${totalStats}</div>
+              <div class="settings-stat-label">筆練習記錄</div>
+            </div>
+            <div class="settings-btn-row">
+              <button class="btn-icon btn-export" id="export-stats-settings-btn" style="flex:1">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" xmlns="http://www.w3.org/2000/svg"><rect x="2" y="2" width="20" height="20" rx="2" fill="#5b8dd9" stroke="#3a6bc4"/><rect x="6" y="2" width="12" height="8" rx="1" fill="#a8c4f0" stroke="#3a6bc4" stroke-width="1.5"/><rect x="9" y="3.5" width="4" height="5" rx="0.5" fill="#3a6bc4" stroke="none"/><rect x="4" y="13" width="16" height="7" rx="1" fill="#d6e8ff" stroke="#3a6bc4" stroke-width="1.5"/></svg>匯出 CSV
+              </button>
+              <button class="btn-danger-sm" id="clear-stats-btn">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4h6v2"/></svg>清除全部
+              </button>
+            </div>
+          </div>
+        </details>
+
+        <details class="settings-collapsible-card">
+          <summary class="settings-collapse-summary">
+            <span class="settings-collapse-title">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4 9.5-9.5z"/></svg>
+              文章撰寫
+            </span>
+            <span class="settings-collapse-count">${totalEssay} 篇</span>
+            <span class="settings-collapse-chevron">⌄</span>
+          </summary>
+          <div class="settings-card settings-collapse-body">
+            <div class="settings-stat-row">
+              <div class="settings-stat-num">${totalEssay}</div>
+              <div class="settings-stat-label">篇練習記錄</div>
+            </div>
+            <div class="settings-btn-row">
+              <button class="btn-icon btn-export" id="export-essay-btn" style="flex:1">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" xmlns="http://www.w3.org/2000/svg"><rect x="2" y="2" width="20" height="20" rx="2" fill="#5b8dd9" stroke="#3a6bc4"/><rect x="6" y="2" width="12" height="8" rx="1" fill="#a8c4f0" stroke="#3a6bc4" stroke-width="1.5"/><rect x="9" y="3.5" width="4" height="5" rx="0.5" fill="#3a6bc4" stroke="none"/><rect x="4" y="13" width="16" height="7" rx="1" fill="#d6e8ff" stroke="#3a6bc4" stroke-width="1.5"/></svg>匯出 CSV
+              </button>
+              <button class="btn-danger-sm" id="clear-essay-btn">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4h6v2"/></svg>清除全部
+              </button>
+            </div>
+          </div>
+        </details>
+
+        <details class="settings-collapsible-card">
+          <summary class="settings-collapse-summary">
+            <span class="settings-collapse-title">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+              AI 詢問
+            </span>
+            <span class="settings-collapse-count">${totalAiAsk} 筆</span>
+            <span class="settings-collapse-chevron">⌄</span>
+          </summary>
+          <div class="settings-card settings-collapse-body">
+            <div class="settings-stat-row">
+              <div class="settings-stat-num">${totalAiAsk}</div>
+              <div class="settings-stat-label">筆詢問記錄</div>
+            </div>
+            <div class="settings-btn-row">
+              <button class="btn-icon btn-export" id="export-aiask-btn" style="flex:1">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" xmlns="http://www.w3.org/2000/svg"><rect x="2" y="2" width="20" height="20" rx="2" fill="#5b8dd9" stroke="#3a6bc4"/><rect x="6" y="2" width="12" height="8" rx="1" fill="#a8c4f0" stroke="#3a6bc4" stroke-width="1.5"/><rect x="9" y="3.5" width="4" height="5" rx="0.5" fill="#3a6bc4" stroke="none"/><rect x="4" y="13" width="16" height="7" rx="1" fill="#d6e8ff" stroke="#3a6bc4" stroke-width="1.5"/></svg>匯出 CSV
+              </button>
+              <button class="btn-danger-sm" id="clear-aiask-btn">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4h6v2"/></svg>清除全部
+              </button>
+            </div>
+          </div>
+        </details>
 
         <!-- 6. Google Drive 設定（Client ID / Folder ID） -->
         <div class="settings-section-label" style="margin-top:16px">
@@ -4618,25 +4650,41 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
   } catch(e) { console.warn('[GDrive] init failed:', e); }
 
-  // ── Global back-to-top FAB (all pages except quiz / essay) ──
+  // ── Global quick-scroll FABs (all pages except quiz / essay; bottom button is Settings-only) ──
   const _backTopBtn = document.getElementById('global-back-top');
+  const _goBottomBtn = document.getElementById('global-go-bottom');
   const _scroller   = document.getElementById('view-container');
-  if (_backTopBtn && _scroller) {
+  if (_scroller) {
+    const updateScrollFabs = () => {
+      const inQuiz  = !!document.getElementById('letter-wrap');
+      const inEssay = !!document.querySelector('.essay-textarea');
+      const blocked = inQuiz || inEssay;
+      const maxScroll = Math.max(0, _scroller.scrollHeight - _scroller.clientHeight);
+      const nearBottom = (maxScroll - _scroller.scrollTop) < 220;
+      if (_backTopBtn) {
+        _backTopBtn.style.display = (!blocked && _scroller.scrollTop > 200) ? 'flex' : 'none';
+      }
+      if (_goBottomBtn) {
+        _goBottomBtn.style.display = (!blocked && Router.currentView === 'settings' && maxScroll > 260 && !nearBottom) ? 'flex' : 'none';
+      }
+    };
+    window.updateScrollFabs = updateScrollFabs;
     let _ticking = false;
     _scroller.addEventListener('scroll', () => {
       if (_ticking) return;
       _ticking = true;
       requestAnimationFrame(() => {
-        // Hide during active letter-input quiz or essay textarea
-        const inQuiz  = !!document.getElementById('letter-wrap');
-        const inEssay = !!document.querySelector('.essay-textarea');
-        _backTopBtn.style.display =
-          (!inQuiz && !inEssay && _scroller.scrollTop > 200) ? 'flex' : 'none';
+        updateScrollFabs();
         _ticking = false;
       });
     }, { passive: true });
-    _backTopBtn.addEventListener('click', () => {
+    _backTopBtn?.addEventListener('click', () => {
       _scroller.scrollTo({ top: 0, behavior: 'smooth' });
+      setTimeout(updateScrollFabs, 320);
+    });
+    _goBottomBtn?.addEventListener('click', () => {
+      _scroller.scrollTo({ top: _scroller.scrollHeight, behavior: 'smooth' });
+      setTimeout(updateScrollFabs, 320);
     });
   }
 

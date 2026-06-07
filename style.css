@@ -2163,3 +2163,107 @@ a.err-back-link {
   overflow-wrap: anywhere;
   word-break: break-word;
 }
+
+/* ===== V6.1 SETTINGS COLLAPSE + QUICK SCROLL ===== */
+.global-go-bottom {
+  position: fixed;
+  right: 18px;
+  bottom: calc(72px + var(--safe-bottom, 0px) + 68px);
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: var(--primary);
+  color: white;
+  border: none;
+  box-shadow: 0 3px 14px rgba(0,0,0,0.25);
+  display: none;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  z-index: 190;
+  transition: opacity 0.2s, transform 0.2s;
+  animation: fab-in 0.2s cubic-bezier(0.4,0,0.2,1);
+}
+.global-go-bottom svg { width: 20px; height: 20px; }
+.global-go-bottom:active { transform: scale(0.92); }
+
+.settings-collapse-group-label { margin-bottom: 8px; }
+.settings-collapsible-card {
+  margin: 8px 0;
+  border-radius: var(--radius);
+  background: var(--card-bg);
+  box-shadow: var(--shadow-sm);
+  overflow: hidden;
+}
+.settings-collapsible-card > summary {
+  list-style: none;
+}
+.settings-collapsible-card > summary::-webkit-details-marker {
+  display: none;
+}
+.settings-collapse-summary {
+  min-height: 56px;
+  padding: 12px 14px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  user-select: none;
+}
+.settings-collapse-title {
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-primary);
+  font-size: 14px;
+  font-weight: 900;
+  letter-spacing: 0.02em;
+}
+.settings-collapse-title svg {
+  width: 17px;
+  height: 17px;
+  flex-shrink: 0;
+  color: var(--text-muted);
+}
+.settings-collapse-count {
+  flex-shrink: 0;
+  padding: 4px 9px;
+  border-radius: 999px;
+  background: var(--bg);
+  color: var(--primary);
+  font-size: 12px;
+  font-weight: 900;
+  line-height: 1;
+}
+.settings-collapse-chevron {
+  flex-shrink: 0;
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+  font-size: 20px;
+  font-weight: 900;
+  transform: rotate(0deg);
+  transition: transform 0.18s ease;
+}
+.settings-collapsible-card[open] .settings-collapse-chevron {
+  transform: rotate(180deg);
+}
+.settings-collapse-body {
+  margin: 0;
+  border-top: 1px solid var(--border);
+  border-radius: 0;
+  box-shadow: none;
+}
+.one-click-summary-grid-compact {
+  margin-bottom: 12px;
+}
+@media (max-width: 390px) {
+  .settings-collapse-count { font-size: 11px; padding: 4px 7px; }
+  .settings-collapse-summary { padding: 11px 12px; }
+}
