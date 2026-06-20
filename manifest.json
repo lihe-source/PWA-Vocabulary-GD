@@ -1,7 +1,7 @@
 {
-  "name": "英文單字複習 V6.1",
+  "name": "英文單字複習 V6.2",
   "short_name": "英文複習",
-  "description": "使用 Gemini AI 輔助的英文單字複習 PWA V6.1",
+  "description": "使用 Gemini AI 輔助的英文單字複習 PWA V6.2",
   "start_url": "./index.html",
   "display": "standalone",
   "background_color": "#0f2d1f",

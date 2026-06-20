@@ -1,11 +1,11 @@
 // ===========================
-// 英文單字複習 PWA - app.js V6_1
-// 更新：設定頁折疊資訊、順序重排與快速捲動按鈕
+// 英文單字複習 PWA - app.js V6_2
+// 更新：Google Drive 自動同步改為雲端資料較多時才自動還原
 // ===========================
 
-const APP_VERSION = 'V6_1';
-const APP_DISPLAY_VERSION = 'V6.1';
-const APP_CACHE_VERSION = 'Voc-PWA-V6_1';
+const APP_VERSION = 'V6_2';
+const APP_DISPLAY_VERSION = 'V6.2';
+const APP_CACHE_VERSION = 'Voc-PWA-V6_2';
 
 // Register Service Worker only when supported (prevents errors in unsupported browsers / webviews).
 if ('serviceWorker' in navigator) {
@@ -1362,6 +1362,43 @@ const GDrive = {
     };
   },
 
+  _countEssaySessions(essayHistory) {
+    return (Array.isArray(essayHistory) ? essayHistory : [])
+      .reduce((sum, h) => sum + (Array.isArray(h?.sessions) ? h.sessions.length : 0), 0);
+  },
+
+  _countPayloadItems(data = {}) {
+    const counts = {
+      words:    Array.isArray(data.words) ? data.words.length : 0,
+      examples: (Array.isArray(data.sentences) ? data.sentences.length : 0)
+              + (Array.isArray(data.imported) ? data.imported.length : 0),
+      practice: Array.isArray(data.history) ? data.history.length : 0,
+      boosted:  Array.isArray(data.boosted) ? data.boosted.length : 0,
+      essay:    this._countEssaySessions(data.essayHistory),
+      aiAsk:    Array.isArray(data.aiAskHistory) ? data.aiAskHistory.length : 0
+    };
+    counts.total = Object.values(counts).reduce((sum, n) => sum + (Number(n) || 0), 0);
+    return counts;
+  },
+
+  _shouldAutoRestore(localCounts, cloudCounts) {
+    const keys = ['words', 'examples', 'practice', 'boosted', 'essay', 'aiAsk'];
+    const cloudHasLessInAnyCategory = keys.some(k => (cloudCounts[k] || 0) < (localCounts[k] || 0));
+    const cloudHasMoreInAnyCategory = keys.some(k => (cloudCounts[k] || 0) > (localCounts[k] || 0));
+    return cloudHasMoreInAnyCategory && !cloudHasLessInAnyCategory;
+  },
+
+  _formatCounts(counts = {}) {
+    return [
+      '單字 ' + (counts.words || 0),
+      '例句 ' + (counts.examples || 0),
+      '練習 ' + (counts.practice || 0),
+      '加強 ' + (counts.boosted || 0),
+      '文章 ' + (counts.essay || 0),
+      'AI詢問 ' + (counts.aiAsk || 0)
+    ].join('・');
+  },
+
   async upload(options = {}) {
     await this.ensureToken(options);
     const data     = this._buildPayload();
@@ -1369,12 +1406,15 @@ const GDrive = {
     const ts       = new Date().toISOString().replace(/[:.]/g, '-');
     const fileName = 'vocab_backup_' + ts + '.json';
     const boundary = 'vocab_boundary_' + Date.now();
+    const dataCounts = this._countPayloadItems(data);
     const summary  = {
-      words:     (data.words||[]).length,
-      sentences: [...(data.sentences||[]), ...(data.imported||[])].length,
-      stats:     (data.history||[]).length,
-      essay:     (data.essayHistory||[]).reduce((s,h)=>s+(h.sessions||[]).length,0),
-      aiAsk:     (data.aiAskHistory||[]).length,
+      words:     dataCounts.words,
+      sentences: dataCounts.examples,
+      stats:     dataCounts.practice,
+      boosted:   dataCounts.boosted,
+      essay:     dataCounts.essay,
+      aiAsk:     dataCounts.aiAsk,
+      total:     dataCounts.total,
       version:   APP_DISPLAY_VERSION
     };
     const metadata = { name: fileName, mimeType: 'application/json', description: JSON.stringify(summary), ...(folderId ? { parents: [folderId] } : {}) };
@@ -1423,6 +1463,25 @@ const GDrive = {
       throw new Error('DOWNLOAD_FAILED: ' + r.status);
     }
     return r.json();
+  },
+
+  async autoRestoreIfCloudHasMore(options = {}) {
+    const files = await this.listBackups(options);
+    if (!files.length) {
+      return { status: 'no_backup', localCounts: this._countPayloadItems(this._buildPayload()), cloudCounts: null, file: null };
+    }
+    const latestFile = files[0];
+    const cloudData = await this.downloadFile(latestFile.id, options);
+    const localCounts = this._countPayloadItems(this._buildPayload());
+    const cloudCounts = this._countPayloadItems(cloudData || {});
+    const shouldRestore = this._shouldAutoRestore(localCounts, cloudCounts);
+
+    if (!shouldRestore) {
+      return { status: 'skipped', localCounts, cloudCounts, file: latestFile };
+    }
+
+    const syncedAt = this.applyDownload(cloudData, 'overwrite');
+    return { status: 'restored', syncedAt, localCounts, cloudCounts, file: latestFile };
   },
 
   applyDownload(data, mode) {
@@ -3963,7 +4022,7 @@ Views.settings = {
         <!-- ★ 1. Google Drive 同步狀態（最上方） -->
         <div class="settings-section-label" style="margin-top:0">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:15px;height:15px"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
-          Google Drive 雲端備份
+          Google Drive 雲端同步
         </div>
         <div class="settings-card">
           ${(signedIn || remembered) ? `
@@ -3971,14 +4030,14 @@ Views.settings = {
               <div class="fb-status-dot ${signedIn ? 'connected' : 'disconnected'}"></div>
               <span class="fb-status-text">${signedIn ? '已登入' : '已記住帳號，待操作時自動續權'}：${email}</span>
             </div>
-            ${lastSync ? '<div class="fb-last-sync" style="margin-bottom:10px">上次備份：' + lastSync + '</div>' : ''}
+            ${lastSync ? '<div class="fb-last-sync" style="margin-bottom:10px">上次同步：' + lastSync + '</div>' : ''}
             <div class="settings-btn-row" style="margin-bottom:10px">
               <button class="btn-fb-upload" id="gd-upload-btn" style="flex:1">${svgUp} 上傳備份</button>
               <button class="btn-fb-download" id="gd-download-btn" style="flex:1">${svgDn} 還原備份</button>
             </div>
             <label class="fb-auto-sync-row">
               <input type="checkbox" id="gd-auto-sync"${autoSync ? ' checked' : ''}>
-              <span>每次開啟 APP 自動備份</span>
+              <span>每次開啟 APP 自動同步（雲端資料較多才自動還原）</span>
             </label>
             ${remembered ? '<div class="settings-tip" style="margin-top:8px">iOS PWA 關閉後可能需要 Google 再確認一次授權；本程式會保留帳號並在上傳/還原時自動續權，不會清空登入設定。</div>' : ''}
             <button class="btn-fb-signout-bottom" id="gd-signout-btn" style="margin-top:10px">
@@ -3991,7 +4050,7 @@ Views.settings = {
               <span class="fb-status-text">${clientId ? '尚未登入 Google' : '請先在下方填入 OAuth Client ID'}</span>
             </div>
             ${clientId ? '<button class="btn-fb-signin" id="gd-signin-btn" style="width:100%;padding:9px 12px;font-size:13px">' + svgG + ' 使用 Google 帳號登入</button>' : ''}
-            <div class="settings-tip" style="margin-top:8px;margin-bottom:0">登入後可將資料備份至 Google Drive。設定請見下方。</div>
+            <div class="settings-tip" style="margin-top:8px;margin-bottom:0">登入後可將資料備份至 Google Drive，也可在雲端資料較多時自動同步到本機。設定請見下方。</div>
           `}
         </div>
 
@@ -4580,10 +4639,10 @@ Views.settings = {
       if (btn) btn.disabled = false;
     });
 
-    // ── 自動備份開關 ──
+    // ── 自動同步開關 ──
     document.getElementById('gd-auto-sync')?.addEventListener('change', (e) => {
       DB.setGDriveAutoSync(e.target.checked);
-      showToast(e.target.checked ? '✓ 已開啟自動備份' : '已關閉自動備份');
+      showToast(e.target.checked ? '✓ 已開啟自動同步：雲端資料較多時會自動還原' : '已關閉自動同步');
     });
 
     // ── 檢查更新 ──
@@ -4640,12 +4699,17 @@ document.addEventListener('DOMContentLoaded', async () => {
   try {
     const restored = await GDrive.tryRestoreToken();
     if (restored && DB.getGDriveAutoSync()) {
-      showToast('☁️ 自動備份上傳中…', 1800);
+      showToast('☁️ 檢查雲端備份中…', 1800);
       try {
-        await GDrive.upload();
-        showToast('✓ 自動備份完成', 2500);
+        const syncResult = await GDrive.autoRestoreIfCloudHasMore();
+        if (syncResult.status === 'restored') {
+          showToast('✓ 已自動同步雲端最新備份', 2800);
+        } else if (syncResult.status === 'skipped') {
+          console.info('[GDrive] Auto-sync skipped. Local:', GDrive._formatCounts(syncResult.localCounts), 'Cloud:', GDrive._formatCounts(syncResult.cloudCounts));
+          showToast('本機資料未少於雲端，不自動更新', 2600);
+        }
       } catch(e) {
-        console.warn('Auto-backup failed', e.message);
+        console.warn('Auto-sync check failed', e.message);
       }
     }
   } catch(e) { console.warn('[GDrive] init failed:', e); }
