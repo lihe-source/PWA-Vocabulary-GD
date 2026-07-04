@@ -1,11 +1,11 @@
 // ===========================
-// 英文單字複習 PWA - app.js V6_2
-// 更新：Google Drive 自動同步改為雲端資料較多時才自動還原
+// 英文單字複習 PWA - app.js V6_6
+// 更新：閱讀測驗翻譯完整性優化，統計頁支援文章中文翻譯
 // ===========================
 
-const APP_VERSION = 'V6_2';
-const APP_DISPLAY_VERSION = 'V6.2';
-const APP_CACHE_VERSION = 'Voc-PWA-V6_2';
+const APP_VERSION = 'V6_6';
+const APP_DISPLAY_VERSION = 'V6.6';
+const APP_CACHE_VERSION = 'Voc-PWA-V6_6';
 
 // Register Service Worker only when supported (prevents errors in unsupported browsers / webviews).
 if ('serviceWorker' in navigator) {
@@ -429,6 +429,78 @@ const DB = {
   deleteWords(ids) { this.saveWords(this.getWords().filter(w => !ids.includes(w.id))); },
   getHistory() { try { return JSON.parse(localStorage.getItem('practiceHistory') || '[]'); } catch { return []; } },
   saveHistory(h) { localStorage.setItem('practiceHistory', JSON.stringify(h)); },
+  // ── Reading Quiz History ──
+  getReadingQuizHistory() { try { return JSON.parse(localStorage.getItem('readingQuizHistory') || '[]'); } catch { return []; } },
+  saveReadingQuizHistory(arr) { localStorage.setItem('readingQuizHistory', JSON.stringify(arr)); },
+  addReadingQuizSession(entry) {
+    const history = this.getReadingQuizHistory();
+    const date = entry.date || todayStr();
+    const session = {
+      id: entry.id || String(Date.now()),
+      article: entry.article || '',
+      articleZh: entry.articleZh || '',
+      words: Array.isArray(entry.words) ? entry.words : [],
+      questions: Array.isArray(entry.questions) ? entry.questions : [],
+      answers: entry.answers || {},
+      score: Number(entry.score) || 0,
+      correct: Number(entry.correct) || 0,
+      total: Number(entry.total) || 5,
+      ts: entry.ts || Date.now()
+    };
+    const idx = history.findIndex(h => h.date === date);
+    if (idx >= 0) history[idx].sessions = [...(history[idx].sessions || []), session];
+    else history.unshift({ date, sessions: [session] });
+    if (history.length > 180) history.length = 180;
+    this.saveReadingQuizHistory(history);
+    return session;
+  },
+  exportReadingQuizCSV() {
+    const history = this.getReadingQuizHistory();
+    const header = ['日期','分數','正確題數','總題數','使用單字','文章','題目結果','時間戳'];
+    const rows = [];
+    history.forEach(h => {
+      (h.sessions || []).forEach(s => {
+        const words = (s.words || []).map(w => w.english || w.word || '').filter(Boolean).join(';');
+        const qa = JSON.stringify({ questions: s.questions || [], answers: s.answers || {}, articleZh: s.articleZh || '' });
+        rows.push([h.date, s.score || 0, s.correct || 0, s.total || 5, words, s.article || '', qa, s.ts || ''].map(v => `"${String(v).replace(/"/g,'""')}"`));
+      });
+    });
+    return [header.join(','), ...rows.map(r => r.join(','))].join('\n');
+  },
+  importReadingQuizCSV(text) {
+    const records = this._splitCSVRecords(text.replace(/^\uFEFF/, '').trim());
+    if (records.length < 2) return { added: 0 };
+    const headerLine = records[0].replace(/"/g, '').trim();
+    if (headerLine !== this.CSV_HEADERS.reading) throw new Error('FORMAT_MISMATCH_READING');
+    const history = this.getReadingQuizHistory();
+    let added = 0;
+    const seen = new Set();
+    history.forEach(h => (h.sessions || []).forEach(s => seen.add(String(s.ts || s.id || '') + '|' + (s.article || '').slice(0, 40))));
+    for (let i = 1; i < records.length; i++) {
+      const cols = this._parseCSVLine(records[i]);
+      if (cols.length < 6) continue;
+      const date = (cols[0] || '').trim();
+      const score = parseInt(cols[1]) || 0;
+      const correct = parseInt(cols[2]) || 0;
+      const total = parseInt(cols[3]) || 5;
+      const wordsStr = (cols[4] || '').trim();
+      const article = (cols[5] || '').trim();
+      const qaRaw = (cols[6] || '').trim();
+      const ts = parseInt(cols[7] || '0') || (Date.now() + i);
+      if (!date || !article) continue;
+      let qa = {}; try { qa = qaRaw ? JSON.parse(qaRaw) : {}; } catch { qa = {}; }
+      const words = wordsStr ? wordsStr.split(';').map(w => ({ english: w.trim(), chinese: '', partOfSpeech: '' })).filter(w => w.english) : [];
+      const key = String(ts) + '|' + article.slice(0, 40);
+      if (seen.has(key)) continue;
+      const session = { id: String(ts), article, articleZh: qa.articleZh || '', words, questions: qa.questions || [], answers: qa.answers || {}, score, correct, total, ts };
+      const idx = history.findIndex(h => h.date === date);
+      if (idx >= 0) history[idx].sessions = [...(history[idx].sessions || []), session];
+      else history.unshift({ date, sessions: [session] });
+      seen.add(key); added++;
+    }
+    this.saveReadingQuizHistory(history);
+    return { added };
+  },
   // ── Essay Writing History ──
   getEssayHistory() { try { return JSON.parse(localStorage.getItem('essayHistory') || '[]'); } catch { return []; } },
   saveEssayHistory(arr) { localStorage.setItem('essayHistory', JSON.stringify(arr)); },
@@ -661,6 +733,7 @@ const DB = {
     essay:     '日期,使用單字,文章,AI批改,分數,模式,題目',
     sentences: 'date,wordEn,wordPos,wordZh,en,zh',
     stats:     '日期,總題數,正確,錯誤,正確率%',
+    reading:   '日期,分數,正確題數,總題數,使用單字,文章,題目結果,時間戳',
     aiask:     'ID,問題,回覆,時間戳'
   },
   // 自動偵測 CSV 類型，回傳 'vocab' | 'sentences' | 'stats' | null
@@ -671,6 +744,7 @@ const DB = {
     if (clean === this.CSV_HEADERS.vocab)     return 'vocab';
     if (clean === this.CSV_HEADERS.sentences)  return 'sentences';
     if (clean === this.CSV_HEADERS.stats)      return 'stats';
+    if (clean === this.CSV_HEADERS.reading)    return 'reading';
     if (clean === this.CSV_HEADERS.essay)      return 'essay';
     if (clean === this.CSV_HEADERS.aiask)      return 'aiask';
     return null;
@@ -807,9 +881,17 @@ const Gemini = {
   _extractText(data) {
     const parts = data.candidates?.[0]?.content?.parts || [];
     if (!parts.length) return '';
-    // Gemini 2.5 Flash thinking model returns thought parts first — skip them
-    const responsePart = parts.find(p => !p.thought && p.text) || parts[parts.length - 1];
-    return responsePart?.text || '';
+    // Thinking / preview models may split the final answer across multiple non-thought text parts.
+    // Join every visible text part so long translations are not cut off after the first segment.
+    const visibleText = parts
+      .filter(p => !p.thought && typeof p.text === 'string')
+      .map(p => p.text)
+      .join('');
+    if (visibleText.trim()) return visibleText;
+    return parts
+      .filter(p => typeof p.text === 'string')
+      .map(p => p.text)
+      .join('');
   },
 
   // Robust parser: handles EN:/ZH: labels, bold markers, thinking model artifacts
@@ -1004,6 +1086,159 @@ ZH: [繁體中文 translation]`;
       } catch (err) {
         if (err.message === 'NETWORK_ERROR') throw err;
         if (err.fallback) { lastErr = err; continue; }
+        throw err;
+      }
+    }
+    throw lastErr || new Error('API_ERROR');
+  },
+
+
+  async translateReadingArticle(article, words) {
+    const apiKey = DB.getApiKey();
+    if (!apiKey) throw new Error('NO_API_KEY');
+    const cleanArticle = String(article || '').trim();
+    if (!cleanArticle) throw new Error('NO_ARTICLE');
+    const wordList = (Array.isArray(words) ? words : []).slice(0, 5).map((w, i) => {
+      const en = String(w.english || w.word || '').trim();
+      const zh = String(w.chinese || '').trim();
+      return `${i + 1}. ${en}: ${zh || '請依文章脈絡翻譯'}`;
+    }).filter(Boolean).join('\n');
+    const prompt = `Translate the full English reading passage into natural Traditional Chinese for Taiwan learners.
+
+English passage:
+${cleanArticle}
+
+Target vocabulary and preferred Chinese meanings:
+${wordList}
+
+Requirements:
+- Translate EVERY sentence from beginning to end. Do not summarize, shorten, skip, or stop early.
+- Keep the original sentence order and meaning.
+- Use the preferred Chinese meanings for the target vocabulary when they fit the passage.
+- Output ONLY the complete Traditional Chinese translation.
+- Do not add explanations, markdown, title, bullet points, or extra notes.`;
+
+    const body = JSON.stringify({
+      contents: [{ parts: [{ text: prompt }] }],
+      generationConfig: { temperature: 0.15, maxOutputTokens: 2400 }
+    });
+
+    let lastErr = null;
+    for (const model of this._getModelList()) {
+      try {
+        const raw = await this._callModel(model, body, apiKey);
+        const zh = String(raw || '')
+          .replace(/^\s*```(?:text|markdown)?\s*/i, '')
+          .replace(/\s*```\s*$/i, '')
+          .replace(/^\s*(?:ZH|Chinese|Translation|中文翻譯|翻譯)\s*[:：]\s*/i, '')
+          .trim();
+        if (zh) return zh;
+        lastErr = new Error('PARSE_ERROR');
+      } catch (err) {
+        if (err.message === 'NETWORK_ERROR') throw err;
+        if (err.fallback) { lastErr = err; continue; }
+        throw err;
+      }
+    }
+    throw lastErr || new Error('API_ERROR');
+  },
+
+
+  async generateReadingQuiz(words) {
+    const apiKey = DB.getApiKey();
+    if (!apiKey) throw new Error('NO_API_KEY');
+    const cleanWords = (Array.isArray(words) ? words : []).slice(0, 5).map((w, i) => ({
+      index: i + 1,
+      english: String(w.english || '').trim().toLowerCase(),
+      partOfSpeech: String(w.partOfSpeech || '').trim(),
+      chinese: String(w.chinese || '').trim()
+    })).filter(w => w.english);
+    if (cleanWords.length < 5) throw new Error('NOT_ENOUGH_WORDS');
+
+    const wordList = cleanWords.map(w => `${w.index}. "${w.english}" (${w.partOfSpeech || 'word'}: ${w.chinese || 'no Chinese definition'})`).join('\n');
+    const prompt = `You are an English reading-test generator for Traditional Chinese learners.
+
+Selected vocabulary words:
+${wordList}
+
+Create a short, natural English reading passage and a synonym multiple-choice quiz.
+
+Respond ONLY with a single valid JSON object. No markdown fences, no explanation, no text before or after JSON.
+Required JSON format:
+{
+  "article": "English passage under 200 words. Use every selected vocabulary word exactly as written at least once.",
+  "questions": [
+    {"word":"selected vocabulary word", "correctSynonym":"one correct English synonym", "options":["option A", "option B", "option C"]}
+  ]
+}
+
+Rules:
+- article must be under 200 English words.
+- questions must contain exactly 5 items, one item for each selected vocabulary word.
+- options must contain exactly 3 English options.
+- exactly one option must be the correct synonym, and it must equal correctSynonym.
+- the other two options must be plausible English distractors but NOT synonyms.
+- Do not translate the article.
+- Keep the article suitable for CEFR A2-B1 learners.`;
+
+    const body = JSON.stringify({
+      contents: [{ parts: [{ text: prompt }] }],
+      generationConfig: { temperature: 0.55, maxOutputTokens: 1800 }
+    });
+
+    const extractJSON = (raw) => {
+      let text = String(raw || '')
+        .replace(/<thinking>[\s\S]*?<\/thinking>/gi, '')
+        .replace(/^\s*```(?:json)?\s*/i, '')
+        .replace(/\s*```\s*$/i, '')
+        .trim();
+      const start = text.indexOf('{');
+      const end = text.lastIndexOf('}');
+      if (start === -1 || end === -1 || end <= start) return null;
+      return text.slice(start, end + 1);
+    };
+    const normalizeQuestion = (q, wordObj, idx) => {
+      const correct = String(q?.correctSynonym || '').trim();
+      let options = Array.isArray(q?.options) ? q.options.map(o => String(o || '').trim()).filter(Boolean) : [];
+      if (correct && !options.some(o => o.toLowerCase() === correct.toLowerCase())) options.unshift(correct);
+      options = [...new Set(options)].slice(0, 3);
+      while (options.length < 3) options.push(['meaning', 'opposite', 'example'][options.length] + ' ' + (idx + 1));
+      return {
+        word: wordObj.english,
+        wordId: wordObj.id || '',
+        chinese: wordObj.chinese || '',
+        partOfSpeech: wordObj.partOfSpeech || '',
+        correctSynonym: correct || options[0],
+        options: options.sort(() => Math.random() - 0.5).slice(0, 3)
+      };
+    };
+
+    let lastErr = null;
+    for (const model of this._getModelList()) {
+      try {
+        const raw = await this._callModel(model, body, apiKey);
+        const jsonStr = extractJSON(raw);
+        if (!jsonStr) { lastErr = new Error('PARSE_ERROR: no JSON'); continue; }
+        const parsed = JSON.parse(jsonStr);
+        const article = String(parsed.article || '').trim();
+        const articleWordCount = (article.match(/\b[\w'-]+\b/g) || []).length;
+        const missingWords = cleanWords.filter(w => !(new RegExp(`\\b${escapeRegex(w.english)}\\b`, 'i')).test(article));
+        const rawQuestions = Array.isArray(parsed.questions) ? parsed.questions : [];
+        if (!article || articleWordCount > 200 || missingWords.length || rawQuestions.length < 5) {
+          lastErr = new Error('PARSE_ERROR: article or quiz does not meet requirements');
+          continue;
+        }
+        const questions = cleanWords.map((cw, i) => {
+          const originalWord = words.find(w => String(w.english || '').trim().toLowerCase() === cw.english) || cw;
+          const match = rawQuestions.find(q => String(q?.word || '').trim().toLowerCase() === cw.english) || rawQuestions[i] || {};
+          return normalizeQuestion(match, originalWord, i);
+        });
+        if (questions.every(q => q.correctSynonym && q.options.length === 3)) return { article, questions };
+        lastErr = new Error('PARSE_ERROR: invalid questions');
+      } catch(err) {
+        if (err.message === 'NETWORK_ERROR') throw err;
+        if (err.fallback) { lastErr = err; continue; }
+        if (err instanceof SyntaxError) { lastErr = new Error('PARSE_ERROR: ' + err.message); continue; }
         throw err;
       }
     }
@@ -1355,6 +1590,7 @@ const GDrive = {
       sentences:    DB.getSentenceLog(),
       imported:     DB.getImportedSentences(),
       boosted:      DB.getBoostedWords(),
+      readingQuizHistory: DB.getReadingQuizHistory(),
       essayHistory: DB.getEssayHistory(),
       aiAskHistory: DB.getAiAskHistory(),
       updatedAt:    new Date().toISOString(),
@@ -1367,6 +1603,11 @@ const GDrive = {
       .reduce((sum, h) => sum + (Array.isArray(h?.sessions) ? h.sessions.length : 0), 0);
   },
 
+  _countReadingSessions(readingQuizHistory) {
+    return (Array.isArray(readingQuizHistory) ? readingQuizHistory : [])
+      .reduce((sum, h) => sum + (Array.isArray(h?.sessions) ? h.sessions.length : 0), 0);
+  },
+
   _countPayloadItems(data = {}) {
     const counts = {
       words:    Array.isArray(data.words) ? data.words.length : 0,
@@ -1374,6 +1615,7 @@ const GDrive = {
               + (Array.isArray(data.imported) ? data.imported.length : 0),
       practice: Array.isArray(data.history) ? data.history.length : 0,
       boosted:  Array.isArray(data.boosted) ? data.boosted.length : 0,
+      reading:  this._countReadingSessions(data.readingQuizHistory),
       essay:    this._countEssaySessions(data.essayHistory),
       aiAsk:    Array.isArray(data.aiAskHistory) ? data.aiAskHistory.length : 0
     };
@@ -1382,7 +1624,7 @@ const GDrive = {
   },
 
   _shouldAutoRestore(localCounts, cloudCounts) {
-    const keys = ['words', 'examples', 'practice', 'boosted', 'essay', 'aiAsk'];
+    const keys = ['words', 'examples', 'practice', 'boosted', 'reading', 'essay', 'aiAsk'];
     const cloudHasLessInAnyCategory = keys.some(k => (cloudCounts[k] || 0) < (localCounts[k] || 0));
     const cloudHasMoreInAnyCategory = keys.some(k => (cloudCounts[k] || 0) > (localCounts[k] || 0));
     return cloudHasMoreInAnyCategory && !cloudHasLessInAnyCategory;
@@ -1394,6 +1636,7 @@ const GDrive = {
       '例句 ' + (counts.examples || 0),
       '練習 ' + (counts.practice || 0),
       '加強 ' + (counts.boosted || 0),
+      '閱讀測驗 ' + (counts.reading || 0),
       '文章 ' + (counts.essay || 0),
       'AI詢問 ' + (counts.aiAsk || 0)
     ].join('・');
@@ -1412,6 +1655,7 @@ const GDrive = {
       sentences: dataCounts.examples,
       stats:     dataCounts.practice,
       boosted:   dataCounts.boosted,
+      reading:   dataCounts.reading,
       essay:     dataCounts.essay,
       aiAsk:     dataCounts.aiAsk,
       total:     dataCounts.total,
@@ -1491,6 +1735,7 @@ const GDrive = {
       if (Array.isArray(data.sentences))    localStorage.setItem('sentenceLog',       JSON.stringify(data.sentences));
       if (Array.isArray(data.imported))     localStorage.setItem('importedSentences', JSON.stringify(data.imported));
       if (Array.isArray(data.boosted))      localStorage.setItem('boostedWords',      JSON.stringify(data.boosted));
+      if (Array.isArray(data.readingQuizHistory)) localStorage.setItem('readingQuizHistory', JSON.stringify(data.readingQuizHistory));
       if (Array.isArray(data.essayHistory)) localStorage.setItem('essayHistory',      JSON.stringify(data.essayHistory));
       if (Array.isArray(data.aiAskHistory)) localStorage.setItem('aiAskHistory',      JSON.stringify(data.aiAskHistory));
     } else {
@@ -1508,6 +1753,14 @@ const GDrive = {
       localStorage.setItem('importedSentences', JSON.stringify([...li, ...ci.filter(s => !iss.has(s.word + s.english))]));
       const lb = new Set(DB.getBoostedWords()); (data.boosted || []).forEach(id => lb.add(id));
       localStorage.setItem('boostedWords', JSON.stringify([...lb]));
+      if (Array.isArray(data.readingQuizHistory)) {
+        const lr = DB.getReadingQuizHistory(); const rm = {};
+        [...lr, ...data.readingQuizHistory].forEach(h => {
+          if (!rm[h.date]) { rm[h.date] = { ...h, sessions: [...(h.sessions||[])] }; }
+          else { const ex = new Set((rm[h.date].sessions||[]).map(s => String(s.ts || s.id || ''))); (h.sessions||[]).forEach(s => { const key = String(s.ts || s.id || ''); if (!ex.has(key)) { rm[h.date].sessions.push(s); ex.add(key); } }); }
+        });
+        localStorage.setItem('readingQuizHistory', JSON.stringify(Object.values(rm)));
+      }
       if (Array.isArray(data.essayHistory)) {
         const le = DB.getEssayHistory(); const em = {};
         [...le, ...data.essayHistory].forEach(h => {
@@ -1802,12 +2055,14 @@ Views.home = {
 function renderPracticeModeSelector(currentMode = 'quiz') {
   const isQuiz = currentMode === 'quiz';
   const isEssay = currentMode === 'essay';
+  const isReading = currentMode === 'reading';
   const isAiAsk = currentMode === 'aiask';
   return `
     <div class="practice-mode-bar">
       <select class="practice-mode-select" id="practice-mode-select" aria-label="選擇練習模式">
         <option value="quiz" ${isQuiz ? 'selected' : ''}>📝 單字拼寫</option>
         <option value="essay" ${isEssay ? 'selected' : ''}>✍️ 文章撰寫</option>
+        <option value="reading" ${isReading ? 'selected' : ''}>📖 文章閱讀測驗</option>
         <option value="aiask" ${isAiAsk ? 'selected' : ''}>💬 AI 詢問</option>
       </select>
     </div>`;
@@ -1822,6 +2077,7 @@ function bindPracticeModeSelector(container, currentMode = 'quiz') {
     Router.essayActive = false;
     Router.quizActive = false;
     if (mode === 'essay') Views.essay.render(container);
+    else if (mode === 'reading') Views.readingQuiz.render(container);
     else if (mode === 'aiask') Views.aiAsk.render(container);
     else Views.practice.render(container);
   });
@@ -2293,6 +2549,349 @@ Views.practice = {
     }));
     document.getElementById('back-home-btn').addEventListener('click', () => Router.navigate('home'));
     document.getElementById('retry-btn').addEventListener('click', () => { state.phase='setup'; this.renderSetup(container); });
+  }
+};
+
+
+// ===========================
+// READING QUIZ VIEW
+// ===========================
+Views.readingQuiz = {
+  state: { phase: 'setup', words: [], article: '', articleZh: '', questions: [], answers: {}, submitted: false, score: 0, correct: 0, translationLoading: false },
+
+  _blankState() {
+    return { phase: 'setup', words: [], article: '', articleZh: '', questions: [], answers: {}, submitted: false, score: 0, correct: 0, translationLoading: false };
+  },
+
+  render(container) {
+    this.state = this._blankState();
+    this.renderSetup(container);
+  },
+
+  renderSetup(container) {
+    Router.quizActive = false;
+    const totalWords = DB.getWords().length;
+    const hasKey = !!DB.getApiKey();
+    const canStart = totalWords >= 5 && hasKey;
+    container.innerHTML = `
+      <div class="section-header"><h1 class="section-title">練習</h1></div>
+      ${renderPracticeModeSelector('reading')}
+      <div class="reading-setup-card">
+        <div class="reading-setup-icon">📖</div>
+        <div class="reading-setup-title">文章閱讀測驗</div>
+        <div class="reading-setup-desc">
+          系統會從目前資料庫隨機挑選 5 個單字，使用你在設定頁選擇的 AI 模型生成 200 字以內的小文章，並針對 5 個單字各出 1 題同義字選擇題。
+        </div>
+        <div class="reading-rule-grid">
+          <div><strong>5</strong><span>個單字</span></div>
+          <div><strong>5</strong><span>題測驗</span></div>
+          <div><strong>20</strong><span>分 / 題</span></div>
+          <div><strong>100</strong><span>滿分</span></div>
+        </div>
+        ${!hasKey ? `<div class="no-api-warning" style="margin-top:12px">請先在設定頁填入 Gemini API Key</div>` : ''}
+        ${totalWords < 5 ? `<div class="no-api-warning" style="margin-top:12px">資料庫至少需要 5 個單字，目前只有 ${totalWords} 個</div>` : ''}
+        <button class="btn-primary" id="reading-start-btn" ${canStart ? '' : 'disabled'}>生成文章並開始測驗</button>
+      </div>
+      <div id="reading-generate-status"></div>
+    `;
+    bindPracticeModeSelector(container, 'reading');
+    document.getElementById('reading-start-btn')?.addEventListener('click', async () => {
+      const btn = document.getElementById('reading-start-btn');
+      const status = document.getElementById('reading-generate-status');
+      const selected = selectWords(5, 'all', DB.getBoostedWords());
+      if (selected.length < 5) { showToast('資料庫至少需要 5 個單字'); return; }
+      btn.disabled = true;
+      if (status) status.innerHTML = `<div class="reading-loading"><div class="loading-dots"><span></span><span></span><span></span></div><span>AI 正在生成閱讀文章與同義字測驗...</span></div>`;
+      try {
+        const result = await Gemini.generateReadingQuiz(selected);
+        this.state = { ...this._blankState(), phase: 'quiz', words: selected, article: result.article, questions: result.questions, answers: {}, submitted: false, score: 0, correct: 0 };
+        Router.quizActive = true;
+        this.renderQuiz(container);
+      } catch(err) {
+        let msg = '文章閱讀測驗生成失敗，請稍後重試';
+        if (err.message === 'NO_API_KEY') msg = '請先在設定頁填入 Gemini API Key';
+        else if (err.message === 'NETWORK_ERROR') msg = '網路連線失敗，請確認連線後重試';
+        else if (String(err.message || '').includes('quota') || String(err.message || '').includes('429')) msg = 'API 配額或請求頻率限制，請稍後再試';
+        else if (String(err.message || '').includes('API') || String(err.message || '').includes('permission')) msg = 'API Key 或模型權限異常，請到設定頁確認';
+        if (status) status.innerHTML = `<div class="essay-error">${escapeHTML(msg)}<div class="essay-error-detail">${escapeHTML(err.message || '')}</div></div>`;
+        btn.disabled = false;
+      }
+    });
+  },
+
+  renderQuiz(container) {
+    const state = this.state;
+    container.innerHTML = `
+      <div class="section-header"><h1 class="section-title">文章閱讀測驗</h1></div>
+      ${renderPracticeModeSelector('reading')}
+      <div class="reading-quiz-shell">
+        <div class="reading-article-card" id="reading-article-top">
+          <div class="reading-section-title-row">
+            <div class="reading-section-title">AI 生成文章</div>
+            <button class="reading-article-zh-btn" id="reading-article-zh-btn" aria-expanded="false">顯示中文</button>
+          </div>
+          <div class="reading-hint">綠色粗體底線單字可點擊，會跳到下方對應題目。中文翻譯可展開在文章下方，方便上下對照。</div>
+          <div class="reading-article" id="reading-article">${this._buildArticleHtml(state.article, state.words)}</div>
+          <div class="reading-article-zh-panel" id="reading-article-zh-panel" hidden>
+            <div class="reading-article-zh-panel-head">
+              <span>中文翻譯</span>
+              <span>可與上方英文文章對照閱讀</span>
+            </div>
+            <div class="reading-article reading-article-zh" id="reading-article-zh-content"></div>
+          </div>
+        </div>
+        <div class="reading-questions-card">
+          <div class="reading-section-title">同義字選擇題</div>
+          <div class="reading-score-note">每題 20 分，共 100 分。請選出與題目單字最接近的英文同義字。</div>
+          <div class="reading-question-list">
+            ${state.questions.map((q, i) => this._questionHtml(q, i)).join('')}
+          </div>
+          <div class="reading-submit-row">
+            <button class="btn-primary" id="reading-submit-btn" disabled>提交答案</button>
+            <button class="btn-secondary" id="reading-regenerate-btn">重新生成</button>
+          </div>
+          <div id="reading-result-area"></div>
+        </div>
+      </div>
+      <div style="height:20px"></div>
+    `;
+    bindPracticeModeSelector(container, 'reading');
+    this._bindQuizEvents(container);
+    setTimeout(() => window.updateScrollFabs?.(), 0);
+  },
+
+  _buildArticleHtml(article, words, options = {}) {
+    const interactive = options.interactive !== false;
+    const idPrefix = options.idPrefix || 'reading-word';
+    let html = nl2br(article || '');
+    (words || []).forEach((w, i) => {
+      const safeWord = escapeHTML(w.english || w.word || '');
+      if (!safeWord) return;
+      const pattern = new RegExp(`\\b(${escapeRegex(safeWord)})\\b`, 'gi');
+      let firstMatch = true;
+      html = html.replace(pattern, (match) => {
+        if (interactive) {
+          const idAttr = firstMatch ? ` id="${idPrefix}-${i}"` : '';
+          firstMatch = false;
+          return `<button class="reading-word-token"${idAttr} data-q="${i}"><strong><u>${match}</u></strong></button>`;
+        }
+        return `<span class="reading-word-token reading-word-token-static"><strong><u>${match}</u></strong></span>`;
+      });
+    });
+    return html;
+  },
+
+  _buildArticleZhHtml(text, words) {
+    let html = nl2br(text || '');
+    const tokens = [];
+    (words || []).forEach(w => {
+      String(w.chinese || '')
+        .split(/[、，,；;／/\s]+/)
+        .map(t => t.replace(/[（(）)【】「」『』“”"'<>]/g, '').trim())
+        .filter(t => t.length >= 2)
+        .forEach(t => tokens.push(t));
+    });
+    const unique = [...new Set(tokens)].sort((a, b) => b.length - a.length);
+    unique.forEach(token => {
+      const safeToken = escapeHTML(token);
+      if (!safeToken) return;
+      html = html.replace(new RegExp(`(${escapeRegex(safeToken)})`, 'g'), '<span class="reading-zh-token"><strong><u>$1</u></strong></span>');
+    });
+    return html;
+  },
+
+  _questionHtml(q, i) {
+    const selected = this.state.answers[i];
+    const submitted = this.state.submitted;
+    const isCorrect = submitted && selected && selected.toLowerCase() === String(q.correctSynonym || '').toLowerCase();
+    return `<div class="reading-question-card ${submitted ? (isCorrect ? 'correct' : 'wrong') : ''}" id="reading-question-${i}">
+      <div class="reading-question-head">
+        <div>
+          <div class="reading-q-num">Q${i + 1}｜20 分</div>
+          <div class="reading-q-word">${escapeHTML(q.word || '')}<span>${escapeHTML(q.partOfSpeech || '')}</span></div>
+          <button class="reading-meaning-btn" data-q="${i}">顯示中文意思</button>
+        </div>
+        <div class="reading-question-actions">
+          <button class="reading-return-word-btn" data-word-index="${i}">回到單字 ↑</button>
+        </div>
+      </div>
+      <div class="reading-options">
+        ${(q.options || []).map(opt => {
+          const optSafe = escapeHTML(opt);
+          const chosen = selected === opt;
+          const correct = submitted && opt.toLowerCase() === String(q.correctSynonym || '').toLowerCase();
+          const wrong = submitted && chosen && !correct;
+          return `<button class="reading-option-btn ${chosen ? 'selected' : ''} ${correct ? 'correct' : ''} ${wrong ? 'wrong' : ''}" data-q="${i}" data-opt="${escapeAttr(opt)}" ${submitted ? 'disabled' : ''}>${optSafe}</button>`;
+        }).join('')}
+      </div>
+      ${submitted ? `<div class="reading-answer-note ${isCorrect ? 'ok' : 'ng'}">${isCorrect ? '✓ 正確' : `✗ 答錯，正確同義字是 ${escapeHTML(q.correctSynonym || '')}`}</div>` : ''}
+    </div>`;
+  },
+
+  _bindQuizEvents(container) {
+    container.querySelectorAll('.reading-word-token').forEach(btn => {
+      btn.addEventListener('click', () => this._scrollToQuestion(parseInt(btn.dataset.q)));
+    });
+    container.querySelectorAll('.reading-return-word-btn').forEach(btn => {
+      btn.addEventListener('click', () => this._scrollToWord(parseInt(btn.dataset.wordIndex)));
+    });
+    container.querySelectorAll('.reading-meaning-btn').forEach(btn => {
+      btn.addEventListener('click', () => this._showWordMeaning(parseInt(btn.dataset.q)));
+    });
+    document.getElementById('reading-article-zh-btn')?.addEventListener('click', () => this._toggleArticleTranslation());
+    container.querySelectorAll('.reading-option-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const qIdx = parseInt(btn.dataset.q);
+        this.state.answers[qIdx] = btn.dataset.opt;
+        const card = document.getElementById(`reading-question-${qIdx}`);
+        card?.querySelectorAll('.reading-option-btn').forEach(b => b.classList.toggle('selected', b === btn));
+        this._updateSubmitState();
+      });
+    });
+    document.getElementById('reading-submit-btn')?.addEventListener('click', () => this.submit(container));
+    document.getElementById('reading-regenerate-btn')?.addEventListener('click', () => this.renderSetup(container));
+  },
+
+  _updateSubmitState() {
+    const done = Object.keys(this.state.answers || {}).length >= 5;
+    const btn = document.getElementById('reading-submit-btn');
+    if (btn) btn.disabled = !done;
+  },
+
+  _scrollToQuestion(i) {
+    const target = document.getElementById(`reading-question-${i}`);
+    if (target) target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  },
+
+  _scrollToWord(i) {
+    const target = document.getElementById(`reading-word-${i}`);
+    if (target) target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  },
+
+  _showFloating(title, bodyHtml, extraClass = '') {
+    let overlay = document.getElementById('reading-floating-overlay');
+    if (!overlay) {
+      overlay = document.createElement('div');
+      overlay.id = 'reading-floating-overlay';
+      overlay.className = 'reading-floating-overlay';
+      document.body.appendChild(overlay);
+    }
+    overlay.innerHTML = `<div class="reading-floating-card ${extraClass}" role="dialog" aria-modal="true">
+      <div class="reading-floating-head">
+        <div class="reading-floating-title">${escapeHTML(title)}</div>
+        <button class="reading-floating-close" id="reading-floating-close" aria-label="關閉">×</button>
+      </div>
+      <div class="reading-floating-body">${bodyHtml}</div>
+    </div>`;
+    const close = () => overlay.classList.remove('show');
+    overlay.classList.add('show');
+    overlay.onclick = (e) => { if (e.target === overlay) close(); };
+    document.getElementById('reading-floating-close')?.addEventListener('click', close);
+  },
+
+  _showWordMeaning(i) {
+    const q = this.state.questions?.[i] || {};
+    const w = this.state.words?.[i] || {};
+    const word = q.word || w.english || '';
+    const pos = q.partOfSpeech || w.partOfSpeech || '';
+    const zh = q.chinese || w.chinese || '目前沒有中文意思';
+    this._showFloating(`${word} 中文意思`, `<div class="reading-meaning-word">${escapeHTML(word)}${pos ? `<span>${escapeHTML(pos)}</span>` : ''}</div><div class="reading-meaning-zh">${escapeHTML(zh)}</div>`, 'reading-meaning-floating');
+  },
+
+  _setArticleTranslationPanel({ open, html = '', loading = false, errorHtml = '' } = {}) {
+    const panel = document.getElementById('reading-article-zh-panel');
+    const content = document.getElementById('reading-article-zh-content');
+    const btn = document.getElementById('reading-article-zh-btn');
+    if (!panel || !content || !btn) return;
+    panel.hidden = !open;
+    panel.classList.toggle('show', !!open);
+    btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+    btn.textContent = open ? '收合中文' : '顯示中文';
+    if (loading) {
+      content.innerHTML = `<div class="reading-loading"><div class="loading-dots"><span></span><span></span><span></span></div><span>AI 正在翻譯文章...</span></div>`;
+    } else if (errorHtml) {
+      content.innerHTML = errorHtml;
+    } else if (html) {
+      content.innerHTML = html;
+    }
+  },
+
+  async _toggleArticleTranslation() {
+    const panel = document.getElementById('reading-article-zh-panel');
+    const btn = document.getElementById('reading-article-zh-btn');
+    if (!panel || !btn) return;
+    if (!panel.hidden && panel.classList.contains('show')) {
+      this._setArticleTranslationPanel({ open: false });
+      return;
+    }
+    if (this.state.articleZh) {
+      this._setArticleTranslationPanel({
+        open: true,
+        html: this._buildArticleZhHtml(this.state.articleZh, this.state.words)
+      });
+      panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      return;
+    }
+    this._setArticleTranslationPanel({ open: true, loading: true });
+    panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    if (btn) btn.disabled = true;
+    try {
+      const zh = await Gemini.translateReadingArticle(this.state.article, this.state.words);
+      this.state.articleZh = zh;
+      this._setArticleTranslationPanel({
+        open: true,
+        html: this._buildArticleZhHtml(zh, this.state.words)
+      });
+    } catch (err) {
+      let msg = '文章翻譯失敗，請稍後重試';
+      if (err.message === 'NO_API_KEY') msg = '請先在設定頁填入 Gemini API Key';
+      else if (err.message === 'NETWORK_ERROR') msg = '網路連線失敗，請確認連線後重試';
+      this._setArticleTranslationPanel({
+        open: true,
+        errorHtml: `<div class="essay-error">${escapeHTML(msg)}<div class="essay-error-detail">${escapeHTML(err.message || '')}</div></div>`
+      });
+    } finally {
+      if (btn) btn.disabled = false;
+    }
+  },
+
+  submit(container) {
+    if (this.state.submitted) return;
+    let correct = 0;
+    this.state.questions.forEach((q, i) => {
+      const ans = this.state.answers[i] || '';
+      if (ans.toLowerCase() === String(q.correctSynonym || '').toLowerCase()) correct++;
+    });
+    const score = correct * 20;
+    this.state.correct = correct;
+    this.state.score = score;
+    this.state.submitted = true;
+    Router.quizActive = false;
+    DB.addReadingQuizSession({
+      date: todayStr(),
+      article: this.state.article,
+      articleZh: this.state.articleZh || '',
+      words: this.state.words,
+      questions: this.state.questions,
+      answers: this.state.answers,
+      correct,
+      total: 5,
+      score,
+      ts: Date.now()
+    });
+    Sound.playResult(score);
+    this.renderQuiz(container);
+    const result = document.getElementById('reading-result-area');
+    const color = score >= 80 ? 'var(--correct)' : score >= 60 ? '#f5a623' : 'var(--danger)';
+    if (result) {
+      result.innerHTML = `<div class="reading-result-card">
+        <div class="reading-result-score" style="color:${color}">${score}<span>/100</span></div>
+        <div class="reading-result-text">答對 ${correct} / 5 題</div>
+        <button class="btn-primary" id="reading-new-test-btn">再測一次</button>
+      </div>`;
+      document.getElementById('reading-new-test-btn')?.addEventListener('click', () => this.renderSetup(container));
+      result.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
   }
 };
 
@@ -3622,6 +4221,7 @@ Views.stats = {
         <select class="stats-mode-select" id="stats-mode-select">
           <option value="quiz" ${this.mode==="quiz"?"selected":""}>📝 單字練習</option>
           <option value="essay" ${this.mode==="essay"?"selected":""}>✍️ 文章撰寫</option>
+          <option value="reading" ${this.mode==="reading"?"selected":""}>📖 文章閱讀測驗</option>
           <option value="aiask" ${this.mode==="aiask"?"selected":""}>💬 AI 詢問</option>
         </select>
       </div>
@@ -3651,6 +4251,7 @@ Views.stats = {
     document.getElementById('stats-mode-select')?.addEventListener('change', (e) => {
       this.mode = e.target.value;
       if (this.mode === 'essay') this.renderEssayStats(container);
+      else if (this.mode === 'reading') this.renderReadingStats(container);
       else if (this.mode === 'aiask') this.renderAiAskStats(container);
       else this.renderStats(container);
     });
@@ -3719,6 +4320,7 @@ Views.stats = {
         <select class="stats-mode-select" id="stats-mode-select">
           <option value="quiz">📝 單字練習</option>
           <option value="essay" selected>✍️ 文章撰寫</option>
+          <option value="reading">📖 文章閱讀測驗</option>
           <option value="aiask">💬 AI 詢問</option>
         </select>
       </div>
@@ -3767,6 +4369,7 @@ Views.stats = {
     document.getElementById('stats-mode-select')?.addEventListener('change', (e) => {
       this.mode = e.target.value;
       if (this.mode === 'quiz') this.renderStats(container);
+      else if (this.mode === 'reading') this.renderReadingStats(container);
       else if (this.mode === 'aiask') this.renderAiAskStats(container);
     });
 
@@ -3864,6 +4467,7 @@ Views.stats = {
         <select class="stats-mode-select" id="stats-mode-select">
           <option value="quiz">📝 單字練習</option>
           <option value="essay">✍️ 文章撰寫</option>
+          <option value="reading">📖 文章閱讀測驗</option>
           <option value="aiask" selected>💬 AI 詢問</option>
         </select>
       </div>`;
@@ -3882,6 +4486,7 @@ Views.stats = {
         this.mode = e.target.value;
         if (this.mode === 'quiz') this.renderStats(container);
         else if (this.mode === 'essay') this.renderEssayStats(container);
+        else if (this.mode === 'reading') this.renderReadingStats(container);
       });
       return;
     }
@@ -3910,6 +4515,7 @@ Views.stats = {
       this.mode = e.target.value;
       if (this.mode === 'quiz') this.renderStats(container);
       else if (this.mode === 'essay') this.renderEssayStats(container);
+      else if (this.mode === 'reading') this.renderReadingStats(container);
     });
 
     let sortOrder = 'new';
@@ -3978,6 +4584,201 @@ Views.stats = {
     document.getElementById('aiask-detail-back')?.addEventListener('click', () => this.renderAiAskStats(container));
   },
 
+
+  renderReadingStats(container) {
+    const history = DB.getReadingQuizHistory();
+    const flatSessions = [];
+    history.forEach(h => (h.sessions || []).forEach((session, si) => flatSessions.push({ date: h.date, s: session, si })));
+    flatSessions.sort((a, b) => (b.s.ts || 0) - (a.s.ts || 0) || b.date.localeCompare(a.date));
+    const total = flatSessions.length;
+    const avg = total ? Math.round(flatSessions.reduce((sum, x) => sum + (Number(x.s.score) || 0), 0) / total) : 0;
+
+    container.innerHTML = `
+      <div class="section-header"><h1 class="section-title">練習統計</h1></div>
+      <div class="stats-mode-bar">
+        <select class="stats-mode-select" id="stats-mode-select">
+          <option value="quiz">📝 單字練習</option>
+          <option value="essay">✍️ 文章撰寫</option>
+          <option value="reading" selected>📖 文章閱讀測驗</option>
+          <option value="aiask">💬 AI 詢問</option>
+        </select>
+      </div>
+      <div class="reading-stats-summary">
+        <div><strong>${total}</strong><span>測驗次數</span></div>
+        <div><strong>${avg}</strong><span>平均分數</span></div>
+      </div>
+      ${flatSessions.length > 0 ? `<div class="rec-header-styled">
+        <div style="text-align:center">日期 / 時間</div>
+        <div style="text-align:center">正確</div>
+        <div class="rec-header-content" style="text-align:center">使用單字</div>
+        <div class="rec-header-score" style="text-align:center">分數</div>
+        <div></div>
+      </div>` : ''}
+      <div class="rec-list-scroll"><div class="rec-list">
+        ${flatSessions.length === 0
+          ? '<div class="essay-stats-empty">尚無文章閱讀測驗記錄<br><span style="font-size:12px;opacity:0.6">前往練習 → 文章閱讀測驗開始練習</span></div>'
+          : flatSessions.map((item, i) => {
+              const s = item.s;
+              const timeStr = s.ts ? new Date(s.ts).toLocaleTimeString('zh-TW', { hour:'2-digit', minute:'2-digit', second:'2-digit' }) : '';
+              const words = (s.words || []).map(w => w.english || w.word || '').filter(Boolean).join('、') || '—';
+              const score = Number(s.score) || 0;
+              const scoreColor = score >= 80 ? 'var(--correct)' : score >= 60 ? '#f5a623' : 'var(--danger)';
+              return `<div class="rec-row reading-stat-row" data-idx="${i}">
+                <div class="rec-date">${escapeHTML(item.date)}<br>${escapeHTML(timeStr || '—')}</div>
+                <div class="rec-ord">${Number(s.correct)||0}/${Number(s.total)||5}</div>
+                <div class="rec-content">${escapeHTML(words)}</div>
+                <div class="rec-score" style="color:${scoreColor}">${score}/100</div>
+                <div class="rec-arrow">▸</div>
+              </div>`;
+            }).join('')}
+      </div></div>
+      <div style="height:20px"></div>
+    `;
+
+    document.getElementById('stats-mode-select')?.addEventListener('change', (e) => {
+      this.mode = e.target.value;
+      if (this.mode === 'quiz') this.renderStats(container);
+      else if (this.mode === 'essay') this.renderEssayStats(container);
+      else if (this.mode === 'aiask') this.renderAiAskStats(container);
+      else this.renderReadingStats(container);
+    });
+    container.querySelectorAll('.reading-stat-row').forEach(row => {
+      row.addEventListener('click', () => {
+        const item = flatSessions[parseInt(row.dataset.idx)];
+        if (item) this.renderReadingSessionDetail(container, item);
+      });
+    });
+  },
+
+  renderReadingSessionDetail(container, item) {
+    const s = item.s || {};
+    const score = Number(s.score) || 0;
+    const scoreColor = score >= 80 ? 'var(--correct)' : score >= 60 ? '#f5a623' : 'var(--danger)';
+    const timeStr = s.ts ? new Date(s.ts).toLocaleTimeString('zh-TW', { hour:'2-digit', minute:'2-digit', second:'2-digit' }) : '';
+    const answers = s.answers || {};
+    const questions = s.questions || [];
+    const baseWords = (Array.isArray(s.words) && s.words.length ? s.words : questions.map(q => ({ english: q.word || '', chinese: q.chinese || '', partOfSpeech: q.partOfSpeech || '' })));
+    const readingWords = baseWords.map((w, i) => {
+      const q = questions[i] || {};
+      return {
+        ...w,
+        english: w.english || w.word || q.word || '',
+        word: w.word || w.english || q.word || '',
+        chinese: w.chinese || q.chinese || '',
+        partOfSpeech: w.partOfSpeech || q.partOfSpeech || ''
+      };
+    });
+    const wordSummary = readingWords.map(w => w.english || w.word || '').filter(Boolean).join('、');
+    container.innerHTML = `
+      <div class="section-header">
+        <button class="back-link" id="reading-detail-back">← 返回列表</button>
+        <h1 class="section-title" style="font-size:16px">${escapeHTML(item.date)} ${escapeHTML(timeStr ? ' · ' + timeStr : '')}</h1>
+      </div>
+      <div class="reading-detail-card">
+        <div class="reading-result-score" style="color:${scoreColor}">${score}<span>/100</span></div>
+        <div class="reading-result-text">答對 ${Number(s.correct)||0} / ${Number(s.total)||5} 題</div>
+        ${wordSummary ? `<div class="essay-detail-section-title">📖 使用單字</div><div class="essay-fb-badges">${wordSummary.split('、').map(w => `<span class="fb-badge fb-ok">${escapeHTML(w)}</span>`).join('')}</div>` : ''}
+        <div class="reading-section-title-row reading-history-article-title-row">
+          <div class="essay-detail-section-title">AI 生成文章</div>
+          <button class="reading-article-zh-btn" id="reading-stat-article-zh-btn" aria-expanded="false">顯示中文</button>
+        </div>
+        <div class="reading-article history-annotated">${Views.readingQuiz._buildArticleHtml(s.article || '', readingWords, { interactive: false })}</div>
+        <div class="reading-article-zh-panel" id="reading-stat-article-zh-panel" hidden>
+          <div class="reading-article-zh-panel-head">
+            <span>中文翻譯</span>
+            <span>可與上方英文文章對照閱讀</span>
+          </div>
+          <div class="reading-article reading-article-zh" id="reading-stat-article-zh-content"></div>
+        </div>
+        <div class="essay-detail-section-title">作答結果</div>
+        <div class="reading-history-q-list">
+          ${questions.map((q, i) => {
+            const selected = answers[i] || '';
+            const correct = String(q.correctSynonym || '');
+            const ok = selected && selected.toLowerCase() === correct.toLowerCase();
+            return `<div class="reading-history-q ${ok ? 'ok' : 'ng'}">
+              <div class="reading-history-q-head"><strong>Q${i + 1}. ${escapeHTML(q.word || '')}</strong><span>${ok ? '✓ 20分' : '✗ 0分'}</span></div>
+              <div class="reading-history-q-line">你的答案：${escapeHTML(selected || '—')}</div>
+              <div class="reading-history-q-line">正確同義字：${escapeHTML(correct || '—')}</div>
+            </div>`;
+          }).join('')}
+        </div>
+      </div>
+      <div style="height:20px"></div>
+    `;
+    document.getElementById('reading-detail-back')?.addEventListener('click', () => this.renderReadingStats(container));
+    document.getElementById('reading-stat-article-zh-btn')?.addEventListener('click', () => this.showReadingStatTranslation(item, readingWords));
+  },
+
+  _setReadingStatTranslationPanel({ open, html = '', loading = false, errorHtml = '' } = {}) {
+    const panel = document.getElementById('reading-stat-article-zh-panel');
+    const content = document.getElementById('reading-stat-article-zh-content');
+    const btn = document.getElementById('reading-stat-article-zh-btn');
+    if (!panel || !content || !btn) return;
+    panel.hidden = !open;
+    panel.classList.toggle('show', !!open);
+    btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+    btn.textContent = open ? '收合中文' : '顯示中文';
+    if (loading) {
+      content.innerHTML = `<div class="reading-loading"><div class="loading-dots"><span></span><span></span><span></span></div><span>AI 正在翻譯文章...</span></div>`;
+    } else if (errorHtml) {
+      content.innerHTML = errorHtml;
+    } else if (html) {
+      content.innerHTML = html;
+    }
+  },
+
+  async showReadingStatTranslation(item, readingWords) {
+    const s = item?.s || {};
+    const panel = document.getElementById('reading-stat-article-zh-panel');
+    const btn = document.getElementById('reading-stat-article-zh-btn');
+    if (!panel || !btn) return;
+    if (!panel.hidden && panel.classList.contains('show')) {
+      this._setReadingStatTranslationPanel({ open: false });
+      return;
+    }
+    if (!s.article) {
+      this._setReadingStatTranslationPanel({ open: true, errorHtml: '<div class="essay-error">此筆紀錄沒有文章內容，無法翻譯。</div>' });
+      return;
+    }
+    if (s.articleZh) {
+      this._setReadingStatTranslationPanel({
+        open: true,
+        html: Views.readingQuiz._buildArticleZhHtml(s.articleZh, readingWords)
+      });
+      panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      return;
+    }
+    this._setReadingStatTranslationPanel({ open: true, loading: true });
+    panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    if (btn) btn.disabled = true;
+    try {
+      const zh = await Gemini.translateReadingArticle(s.article, readingWords);
+      s.articleZh = zh;
+      const history = DB.getReadingQuizHistory();
+      const day = history.find(h => h.date === item.date);
+      const target = day?.sessions?.find(x => String(x.id || x.ts || '') === String(s.id || s.ts || '') || (x.ts && s.ts && Number(x.ts) === Number(s.ts)));
+      if (target) {
+        target.articleZh = zh;
+        DB.saveReadingQuizHistory(history);
+      }
+      this._setReadingStatTranslationPanel({
+        open: true,
+        html: Views.readingQuiz._buildArticleZhHtml(zh, readingWords)
+      });
+    } catch (err) {
+      let msg = '文章翻譯失敗，請稍後重試';
+      if (err.message === 'NO_API_KEY') msg = '請先在設定頁填入 Gemini API Key';
+      else if (err.message === 'NETWORK_ERROR') msg = '網路連線失敗，請確認連線後重試';
+      this._setReadingStatTranslationPanel({
+        open: true,
+        errorHtml: `<div class="essay-error">${escapeHTML(msg)}<div class="essay-error-detail">${escapeHTML(err.message || '')}</div></div>`
+      });
+    } finally {
+      if (btn) btn.disabled = false;
+    }
+  },
+
   showWrongModal(date, wrongWordDetails) {
     Modal.show(`<div class="modal-handle"></div><div class="modal-title">${date} 答錯的單字</div><div style="font-size:13px;color:var(--text-muted);margin-bottom:12px">共 ${wrongWordDetails.length} 個</div><div style="max-height:55vh;overflow-y:auto;">${wrongWordDetails.map(w=>`<div class="wrong-word-card" style="margin-bottom:8px"><div class="wrong-word-en">${w.english}</div><div class="wrong-word-meta"><span class="wrong-word-pos">${w.partOfSpeech}</span><span class="wrong-word-zh">${w.chinese}</span></div></div>`).join('')}</div><div style="margin-top:16px"><button class="modal-btn-cancel" id="close-wrong-modal" style="width:100%">關閉</button></div>`);
     document.getElementById('close-wrong-modal').addEventListener('click', () => Modal.hide());
@@ -4010,6 +4811,9 @@ Views.settings = {
     const totalSentences    = DB.getCombinedSentenceLog().length;
     const totalWords        = DB.getWords().length;
     const totalStats        = DB.getHistory().length;
+    const readingHistoryAll = DB.getReadingQuizHistory();
+    const totalReading      = readingHistoryAll.reduce((s,h) => s + (h.sessions||[]).length, 0);
+    const readingAvg        = totalReading ? Math.round(readingHistoryAll.reduce((sum,h) => sum + (h.sessions||[]).reduce((ss,x)=>ss+(Number(x.score)||0),0),0) / totalReading) : 0;
     const essayHistoryAll   = DB.getEssayHistory();
     const totalEssay        = essayHistoryAll.reduce((s,h) => s + (h.sessions||[]).length, 0);
     const totalAiAsk        = DB.getAiAskHistory().length;
@@ -4060,7 +4864,7 @@ Views.settings = {
           一鍵匯出全部
         </div>
         <div class="settings-card">
-          <div class="one-click-export-desc">同時匯出單字庫、例句庫、統計資料、文章撰寫、AI 詢問記錄，方便備份或跨裝置移轉。</div>
+          <div class="one-click-export-desc">同時匯出單字庫、例句庫、統計資料、文章閱讀測驗、文章撰寫、AI 詢問記錄，方便備份或跨裝置移轉。</div>
           <div class="one-click-summary-grid one-click-summary-grid-compact">
             <div class="oc-stat-cell">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>
@@ -4073,6 +4877,10 @@ Views.settings = {
             <div class="oc-stat-cell">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
               <div class="oc-stat-num">${totalStats}</div><div class="oc-stat-label">統計</div>
+            </div>
+            <div class="oc-stat-cell">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 4h20v14H6l-4 4V4z"/><path d="M7 9h10"/><path d="M7 13h6"/></svg>
+              <div class="oc-stat-num">${totalReading}</div><div class="oc-stat-label">閱讀測驗</div>
             </div>
             <div class="oc-stat-cell">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4 9.5-9.5z"/></svg>
@@ -4090,7 +4898,7 @@ Views.settings = {
           <div class="one-click-divider-h"></div>
           <button class="btn-one-click-import" id="one-click-import-btn">
             <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" style="width:20px;height:20px"><path d="M2 7C2 5.9 2.9 5 4 5H10L12 7H20C21.1 7 22 7.9 22 9V18C22 19.1 21.1 20 20 20H4C2.9 20 2 19.1 2 18V7Z" fill="#f5a623" stroke="#d4891a" stroke-width="1.5" stroke-linejoin="round"/><path d="M2 10H22V18C22 19.1 21.1 20 20 20H4C2.9 20 2 19.1 2 18V10Z" fill="#ffc84a" stroke="#d4891a" stroke-width="1.5" stroke-linejoin="round"/></svg>
-            一鍵匯入（最多 3 個 CSV）
+            一鍵匯入（CSV / ZIP）
           </button>
           <div class="one-click-import-hint">可選取單字/例句/統計 CSV，或直接選取備份 ZIP 檔一鍵還原</div>
         </div>
@@ -4180,6 +4988,37 @@ Views.settings = {
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" xmlns="http://www.w3.org/2000/svg"><rect x="2" y="2" width="20" height="20" rx="2" fill="#5b8dd9" stroke="#3a6bc4"/><rect x="6" y="2" width="12" height="8" rx="1" fill="#a8c4f0" stroke="#3a6bc4" stroke-width="1.5"/><rect x="9" y="3.5" width="4" height="5" rx="0.5" fill="#3a6bc4" stroke="none"/><rect x="4" y="13" width="16" height="7" rx="1" fill="#d6e8ff" stroke="#3a6bc4" stroke-width="1.5"/></svg>匯出 CSV
               </button>
               <button class="btn-danger-sm" id="clear-stats-btn">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4h6v2"/></svg>清除全部
+              </button>
+            </div>
+          </div>
+        </details>
+
+        <details class="settings-collapsible-card">
+          <summary class="settings-collapse-summary">
+            <span class="settings-collapse-title">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 4h20v14H6l-4 4V4z"/><path d="M7 9h10"/><path d="M7 13h6"/></svg>
+              文章閱讀測驗
+            </span>
+            <span class="settings-collapse-count">${totalReading} 次</span>
+            <span class="settings-collapse-chevron">⌄</span>
+          </summary>
+          <div class="settings-card settings-collapse-body">
+            <div class="sentence-stats-row">
+              <div class="sentence-stat-box">
+                <div class="sentence-stat-num">${totalReading}</div>
+                <div class="sentence-stat-label">測驗次數</div>
+              </div>
+              <div class="sentence-stat-box">
+                <div class="sentence-stat-num" style="color:#e67e00">${readingAvg}</div>
+                <div class="sentence-stat-label">平均分數</div>
+              </div>
+            </div>
+            <div class="settings-btn-row">
+              <button class="btn-icon btn-export" id="export-reading-btn" style="flex:1">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" xmlns="http://www.w3.org/2000/svg"><rect x="2" y="2" width="20" height="20" rx="2" fill="#5b8dd9" stroke="#3a6bc4"/><rect x="6" y="2" width="12" height="8" rx="1" fill="#a8c4f0" stroke="#3a6bc4" stroke-width="1.5"/><rect x="9" y="3.5" width="4" height="5" rx="0.5" fill="#3a6bc4" stroke="none"/><rect x="4" y="13" width="16" height="7" rx="1" fill="#d6e8ff" stroke="#3a6bc4" stroke-width="1.5"/></svg>匯出 CSV
+              </button>
+              <button class="btn-danger-sm" id="clear-reading-btn">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4h6v2"/></svg>清除全部
               </button>
             </div>
@@ -4372,6 +5211,18 @@ Views.settings = {
         () => { DB.saveHistory([]); showToast('已清除練習統計'); this.render(container); });
     });
 
+    // ── 4a. 文章閱讀測驗 ──
+    document.getElementById('export-reading-btn')?.addEventListener('click', () => {
+      if (!totalReading) { showToast('尚無文章閱讀測驗記錄'); return; }
+      downloadCSV(DB.exportReadingQuizCSV(), `reading_${dateTag}.csv`);
+      showToast('✓ 文章閱讀測驗 CSV 已匯出');
+    });
+    document.getElementById('clear-reading-btn')?.addEventListener('click', () => {
+      confirmClear('清除文章閱讀測驗記錄',
+        `確定要清除全部 ${totalReading} 次文章閱讀測驗記錄嗎？此操作無法復原。`,
+        () => { DB.saveReadingQuizHistory([]); showToast('已清除文章閱讀測驗記錄'); this.render(container); });
+    });
+
     // ── 4b. 文章撰寫 ──
     document.getElementById('export-essay-btn')?.addEventListener('click', () => {
       if (!totalEssay) { showToast('尚無文章記錄'); return; }
@@ -4398,14 +5249,15 @@ Views.settings = {
 
     // ── 5. 一鍵匯出：打包成單一 ZIP 一次下載 ──
     document.getElementById('one-click-export-btn').addEventListener('click', async () => {
-      const words = DB.getWords(); const sentCsv = DB.exportSentencesCSV(); const statHistory = DB.getHistory();
-      if (!words.length && !sentCsv.includes('\n') && !statHistory.length) { showToast('尚無資料可匯出'); return; }
+      const words = DB.getWords(); const sentCsv = DB.exportSentencesCSV(); const statHistory = DB.getHistory(); const readingHistory = DB.getReadingQuizHistory();
+      if (!words.length && !sentCsv.includes('\n') && !statHistory.length && !readingHistory.length && !DB.getEssayHistory().length && !DB.getAiAskHistory().length) { showToast('尚無資料可匯出'); return; }
       showToast('⏳ 正在打包...', 1800);
       try {
         const zip = new JSZip();
         if (words.length)           zip.file(`vocab_${dateTag}.csv`,     '\uFEFF' + DB.exportCSV());
         if (sentCsv.includes('\n')) zip.file(`sentences_${dateTag}.csv`, '\uFEFF' + sentCsv);
         if (statHistory.length)     zip.file(`stats_${dateTag}.csv`,     '\uFEFF' + DB.exportStatsCSV());
+        if (readingHistory.length)  zip.file(`reading_${dateTag}.csv`,   '\uFEFF' + DB.exportReadingQuizCSV());
         const essayHistory = DB.getEssayHistory();
         if (essayHistory.length)    zip.file(`essay_${dateTag}.csv`,     '\uFEFF' + DB.exportEssayCSV());
         const aiAskHistory = DB.getAiAskHistory();
@@ -4413,7 +5265,7 @@ Views.settings = {
         const blob = await zip.generateAsync({ type: 'blob', compression: 'DEFLATE' });
         const url = URL.createObjectURL(blob); const a = document.createElement('a');
         a.href = url; a.download = `vocab-backup_${dateTag}.zip`; a.click(); URL.revokeObjectURL(url);
-        const count = [words.length, sentCsv.includes('\n'), statHistory.length, essayHistory.length, aiAskHistory.length].filter(Boolean).length;
+        const count = [words.length, sentCsv.includes('\n'), statHistory.length, readingHistory.length, essayHistory.length, aiAskHistory.length].filter(Boolean).length;
         showToast(`✓ 已匯出 ${count} 個檔案（ZIP）`, 3000);
       } catch(err) {
         showToast('匯出失敗，請重試');
@@ -4443,6 +5295,9 @@ Views.settings = {
           } else if (type === 'stats') {
             const r = DB.importStatsCSV(text);
             results.push(`📊 統計（${name}）：新增 ${r.added} 筆，更新 ${r.updated} 筆`);
+          } else if (type === 'reading') {
+            const r = DB.importReadingQuizCSV(text);
+            results.push(`📖 文章閱讀測驗（${name}）：新增 ${r.added} 筆`);
           } else if (type === 'essay') {
             const r = DB.importEssayCSV(text);
             results.push(`✍️ 文章記錄（${name}）：新增 ${r.added} 筆`);
@@ -4714,7 +5569,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
   } catch(e) { console.warn('[GDrive] init failed:', e); }
 
-  // ── Global quick-scroll FABs (all pages except quiz / essay; bottom button is Settings-only) ──
+  // ── Global quick-scroll FABs (all pages except active spelling / essay; bottom button is Settings + Reading quiz) ──
   const _backTopBtn = document.getElementById('global-back-top');
   const _goBottomBtn = document.getElementById('global-go-bottom');
   const _scroller   = document.getElementById('view-container');
@@ -4722,6 +5577,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     const updateScrollFabs = () => {
       const inQuiz  = !!document.getElementById('letter-wrap');
       const inEssay = !!document.querySelector('.essay-textarea');
+      const inReading = !!document.querySelector('.reading-quiz-shell');
       const blocked = inQuiz || inEssay;
       const maxScroll = Math.max(0, _scroller.scrollHeight - _scroller.clientHeight);
       const nearBottom = (maxScroll - _scroller.scrollTop) < 220;
@@ -4729,7 +5585,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         _backTopBtn.style.display = (!blocked && _scroller.scrollTop > 200) ? 'flex' : 'none';
       }
       if (_goBottomBtn) {
-        _goBottomBtn.style.display = (!blocked && Router.currentView === 'settings' && maxScroll > 260 && !nearBottom) ? 'flex' : 'none';
+        _goBottomBtn.style.display = (!blocked && (Router.currentView === 'settings' || inReading) && maxScroll > 260 && !nearBottom) ? 'flex' : 'none';
       }
     };
     window.updateScrollFabs = updateScrollFabs;
