@@ -1,144 +1,142 @@
+import { AppStorage } from './storage.js';
+import { BackupSchema } from './backup-schema.js';
+import { VersionManager } from './version-manager.js';
+import { TrendChart } from './chart-renderer.js';
+
 // ===========================
-// 英文單字複習 PWA - app.js V6_6
-// 更新：閱讀測驗翻譯完整性優化，統計頁支援文章中文翻譯
+// 英文單字複習 PWA - app.js V7_0_2
+// V7：IndexedDB 資料層、備份驗證、OAuth Token 安全化、自動更新
 // ===========================
 
-const APP_VERSION = 'V6_6';
-const APP_DISPLAY_VERSION = 'V6.6';
-const APP_CACHE_VERSION = 'Voc-PWA-V6_6';
-
-// Register Service Worker only when supported (prevents errors in unsupported browsers / webviews).
-if ('serviceWorker' in navigator) {
-  navigator.serviceWorker.addEventListener('message', e => {
-    if (e.data?.type === 'SW_UPDATED') {
-      setTimeout(() => showToast('🔄 已更新至最新版本', 3500), 500);
-    }
-  });
-  window.addEventListener('load', () => {
-    navigator.serviceWorker.register('./sw.js').catch(() => {});
-  });
-}
+const APP_VERSION = 'V7_0_2';
+const APP_DISPLAY_VERSION = 'V7.0.2';
+const APP_CACHE_VERSION = 'Voc-PWA-V7_0_2';
+const AppUpdater = new VersionManager({
+  currentVersion: APP_VERSION,
+  displayVersion: APP_DISPLAY_VERSION,
+  cachePrefix: 'Voc-PWA-',
+  versionUrl: './version.json',
+  storage: AppStorage
+});
 
 // ===== Web Audio Sound Effects =====
+// iOS/PWA note: speechSynthesis can interrupt Web Audio.  Keep one low-latency
+// context, explicitly unlock it from user gestures, and resume it before every cue.
 const Sound = {
   ctx: null,
-  // Create or return AudioContext
-  _getCtx() {
-    if (!this.ctx) this.ctx = new (window.AudioContext || window.webkitAudioContext)();
+  master: null,
+  unlocked: false,
+  unlockPromise: null,
+
+  _createContext() {
+    const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+    if (!AudioContextClass) return null;
+    if (!this.ctx || this.ctx.state === 'closed') {
+      try {
+        this.ctx = new AudioContextClass({ latencyHint: 'interactive' });
+      } catch {
+        this.ctx = new AudioContextClass();
+      }
+      this.master = this.ctx.createGain();
+      this.master.gain.value = 0.9;
+      this.master.connect(this.ctx.destination);
+      this.unlocked = false;
+    }
     return this.ctx;
   },
-  // Unlock / prime — call this from a direct user-gesture handler
+
+  // Must be called from a click/tap/key action at least once on iOS.
   unlock() {
-    try {
-      const ctx = this._getCtx();
-      if (ctx.state !== 'running') ctx.resume().catch(() => {});
-    } catch(e) {}
-  },
-  // Schedule audio only AFTER context is confirmed running (handles async resume)
-  _withCtx(fn) {
-    try {
-      const ctx = this._getCtx();
-      if (ctx.state === 'running') {
-        fn(ctx);
-      } else {
-        // Context is suspended — resume first, then play
-        ctx.resume().then(() => fn(ctx)).catch(() => {});
+    const ctx = this._createContext();
+    if (!ctx) return Promise.resolve(false);
+    if (this.unlockPromise) return this.unlockPromise;
+
+    // Starting a silent buffer synchronously is more reliable than resume() alone
+    // in standalone Safari/PWA mode.
+    if (!this.unlocked) {
+      try {
+        const silent = ctx.createBufferSource();
+        silent.buffer = ctx.createBuffer(1, 1, Math.max(8000, ctx.sampleRate || 44100));
+        silent.connect(this.master);
+        silent.start(0);
+        this.unlocked = true;
+      } catch {}
+    }
+
+    this.unlockPromise = (async () => {
+      try {
+        if (ctx.state !== 'running') await ctx.resume();
+        return ctx.state === 'running';
+      } catch {
+        return false;
+      } finally {
+        this.unlockPromise = null;
       }
-    } catch(e) {}
+    })();
+    return this.unlockPromise;
   },
+
+  async _withCtx(fn) {
+    try {
+      const ready = await this.unlock();
+      if (!ready || !this.ctx || !this.master) return;
+      fn(this.ctx, this.master);
+    } catch {}
+  },
+
+  _tone(ctx, destination, { frequency, start = 0, duration = 0.25, gain = 0.28, type = 'sine', endFrequency = null }) {
+    const now = ctx.currentTime + 0.008;
+    const osc = ctx.createOscillator();
+    const amp = ctx.createGain();
+    osc.type = type;
+    osc.frequency.setValueAtTime(frequency, now + start);
+    if (endFrequency !== null) osc.frequency.linearRampToValueAtTime(endFrequency, now + start + duration);
+    amp.gain.setValueAtTime(0.0001, now + start);
+    amp.gain.exponentialRampToValueAtTime(Math.max(0.0002, gain), now + start + 0.018);
+    amp.gain.exponentialRampToValueAtTime(0.0001, now + start + duration);
+    osc.connect(amp);
+    amp.connect(destination);
+    osc.start(now + start);
+    osc.stop(now + start + duration + 0.025);
+  },
+
   playCorrect() {
-    this._withCtx(ctx => {
-      const o = ctx.createOscillator(); const g = ctx.createGain();
-      o.connect(g); g.connect(ctx.destination); o.type = 'sine';
-      o.frequency.setValueAtTime(523, ctx.currentTime);
-      o.frequency.setValueAtTime(659, ctx.currentTime + 0.1);
-      o.frequency.setValueAtTime(784, ctx.currentTime + 0.2);
-      g.gain.setValueAtTime(0.4, ctx.currentTime);
-      g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.5);
-      o.start(ctx.currentTime); o.stop(ctx.currentTime + 0.5);
+    return this._withCtx((ctx, out) => {
+      this._tone(ctx, out, { frequency: 523, start: 0, duration: 0.22, gain: 0.34 });
+      this._tone(ctx, out, { frequency: 659, start: 0.09, duration: 0.23, gain: 0.32 });
+      this._tone(ctx, out, { frequency: 784, start: 0.18, duration: 0.28, gain: 0.30 });
     });
   },
+
   playWrong() {
-    this._withCtx(ctx => {
-      const o = ctx.createOscillator(); const g = ctx.createGain();
-      o.connect(g); g.connect(ctx.destination); o.type = 'sawtooth';
-      o.frequency.setValueAtTime(200, ctx.currentTime);
-      o.frequency.setValueAtTime(150, ctx.currentTime + 0.1);
-      g.gain.setValueAtTime(0.3, ctx.currentTime);
-      g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.3);
-      o.start(ctx.currentTime); o.stop(ctx.currentTime + 0.3);
+    return this._withCtx((ctx, out) => {
+      this._tone(ctx, out, { frequency: 210, endFrequency: 145, duration: 0.34, gain: 0.30, type: 'sawtooth' });
     });
   },
-  // pct: 0-100 → play tiered result fanfare
+
+  // pct: 0-100 → tiered result fanfare
   playResult(pct) {
-    this._withCtx(ctx => {
-      const t = ctx.currentTime;
-      if (pct === 100) {
-        // Perfect: bright 5-note ascending fanfare + shimmer
-        const notes = [523,659,784,1047,1319];
-        notes.forEach((freq, i) => {
-          const o = ctx.createOscillator(); const g = ctx.createGain();
-          o.connect(g); g.connect(ctx.destination); o.type = 'sine';
-          o.frequency.value = freq;
-          g.gain.setValueAtTime(0, t + i*0.1);
-          g.gain.linearRampToValueAtTime(0.35, t + i*0.1 + 0.04);
-          g.gain.exponentialRampToValueAtTime(0.001, t + i*0.1 + 0.35);
-          o.start(t + i*0.1); o.stop(t + i*0.1 + 0.4);
-        });
-      } else if (pct >= 80) {
-        // Great: cheerful 4-note arpeggio
-        const notes = [523,659,784,1047];
-        notes.forEach((freq, i) => {
-          const o = ctx.createOscillator(); const g = ctx.createGain();
-          o.connect(g); g.connect(ctx.destination); o.type = 'sine';
-          o.frequency.value = freq;
-          g.gain.setValueAtTime(0.3, t + i*0.1);
-          g.gain.exponentialRampToValueAtTime(0.001, t + i*0.1 + 0.3);
-          o.start(t + i*0.1); o.stop(t + i*0.1 + 0.35);
-        });
-      } else if (pct >= 60) {
-        // Good: 3-note upward
-        [523, 659, 784].forEach((freq, i) => {
-          const o = ctx.createOscillator(); const g = ctx.createGain();
-          o.connect(g); g.connect(ctx.destination); o.type = 'sine';
-          o.frequency.value = freq;
-          g.gain.setValueAtTime(0.28, t + i*0.12);
-          g.gain.exponentialRampToValueAtTime(0.001, t + i*0.12 + 0.3);
-          o.start(t + i*0.12); o.stop(t + i*0.12 + 0.35);
-        });
-      } else if (pct >= 40) {
-        // OK: simple 2-note neutral
-        [440, 523].forEach((freq, i) => {
-          const o = ctx.createOscillator(); const g = ctx.createGain();
-          o.connect(g); g.connect(ctx.destination); o.type = 'sine';
-          o.frequency.value = freq;
-          g.gain.setValueAtTime(0.25, t + i*0.15);
-          g.gain.exponentialRampToValueAtTime(0.001, t + i*0.15 + 0.3);
-          o.start(t + i*0.15); o.stop(t + i*0.15 + 0.35);
-        });
-      } else if (pct >= 20) {
-        // Poor: descending 2 notes
-        [392, 330].forEach((freq, i) => {
-          const o = ctx.createOscillator(); const g = ctx.createGain();
-          o.connect(g); g.connect(ctx.destination); o.type = 'triangle';
-          o.frequency.value = freq;
-          g.gain.setValueAtTime(0.22, t + i*0.18);
-          g.gain.exponentialRampToValueAtTime(0.001, t + i*0.18 + 0.35);
-          o.start(t + i*0.18); o.stop(t + i*0.18 + 0.4);
-        });
-      } else {
-        // 0%: low descending tone
-        const o = ctx.createOscillator(); const g = ctx.createGain();
-        o.connect(g); g.connect(ctx.destination); o.type = 'sawtooth';
-        o.frequency.setValueAtTime(280, t);
-        o.frequency.linearRampToValueAtTime(180, t + 0.4);
-        g.gain.setValueAtTime(0.25, t);
-        g.gain.exponentialRampToValueAtTime(0.001, t + 0.5);
-        o.start(t); o.stop(t + 0.55);
-      }
+    return this._withCtx((ctx, out) => {
+      const schedule = (notes, type = 'sine', gain = 0.28, step = 0.11, duration = 0.34) => {
+        notes.forEach((frequency, i) => this._tone(ctx, out, { frequency, start: i * step, duration, gain, type }));
+      };
+      if (pct === 100) schedule([523, 659, 784, 1047, 1319], 'sine', 0.32, 0.10, 0.38);
+      else if (pct >= 80) schedule([523, 659, 784, 1047], 'sine', 0.30, 0.11, 0.34);
+      else if (pct >= 60) schedule([523, 659, 784], 'sine', 0.28, 0.12, 0.32);
+      else if (pct >= 40) schedule([440, 523], 'triangle', 0.26, 0.15, 0.32);
+      else if (pct >= 20) schedule([392, 330], 'triangle', 0.25, 0.18, 0.36);
+      else this._tone(ctx, out, { frequency: 280, endFrequency: 175, duration: 0.52, gain: 0.28, type: 'sawtooth' });
     });
   }
 };
+
+// Prime/resume Web Audio from genuine user gestures. This is especially important
+// after iOS speech synthesis or returning to the PWA from the background.
+const primeQuizSound = () => {
+  if (!Sound.ctx || Sound.ctx.state !== 'running') void Sound.unlock();
+};
+document.addEventListener('pointerdown', primeQuizSound, { passive: true });
+document.addEventListener('keydown', primeQuizSound, { passive: true });
 
 // ===== ECDICT IndexedDB Module =====
 const ECDICT = {
@@ -415,8 +413,8 @@ const ECDICT = {
 
 // ===== DATA MANAGEMENT =====
 const DB = {
-  getWords() { try { return JSON.parse(localStorage.getItem('vocabWords') || '[]'); } catch { return []; } },
-  saveWords(words) { localStorage.setItem('vocabWords', JSON.stringify(words)); },
+  getWords() { try { return JSON.parse(AppStorage.getItem('vocabWords') || '[]'); } catch { return []; } },
+  saveWords(words) { AppStorage.setItem('vocabWords', JSON.stringify(words)); },
   addWord(word) {
     const words = this.getWords();
     const newWord = { id: Date.now().toString(), english: word.english.trim().toLowerCase(), partOfSpeech: word.partOfSpeech || '', chinese: word.chinese.trim(), phonetic: word.phonetic || '', wrongCount: 0, createdAt: todayStr(), frequencyWeight: 1 };
@@ -427,11 +425,11 @@ const DB = {
     if (idx !== -1) { words[idx] = { ...words[idx], ...data }; this.saveWords(words); return words[idx]; }
   },
   deleteWords(ids) { this.saveWords(this.getWords().filter(w => !ids.includes(w.id))); },
-  getHistory() { try { return JSON.parse(localStorage.getItem('practiceHistory') || '[]'); } catch { return []; } },
-  saveHistory(h) { localStorage.setItem('practiceHistory', JSON.stringify(h)); },
+  getHistory() { try { return JSON.parse(AppStorage.getItem('practiceHistory') || '[]'); } catch { return []; } },
+  saveHistory(h) { AppStorage.setItem('practiceHistory', JSON.stringify(h)); },
   // ── Reading Quiz History ──
-  getReadingQuizHistory() { try { return JSON.parse(localStorage.getItem('readingQuizHistory') || '[]'); } catch { return []; } },
-  saveReadingQuizHistory(arr) { localStorage.setItem('readingQuizHistory', JSON.stringify(arr)); },
+  getReadingQuizHistory() { try { return JSON.parse(AppStorage.getItem('readingQuizHistory') || '[]'); } catch { return []; } },
+  saveReadingQuizHistory(arr) { AppStorage.setItem('readingQuizHistory', JSON.stringify(arr)); },
   addReadingQuizSession(entry) {
     const history = this.getReadingQuizHistory();
     const date = entry.date || todayStr();
@@ -502,8 +500,8 @@ const DB = {
     return { added };
   },
   // ── Essay Writing History ──
-  getEssayHistory() { try { return JSON.parse(localStorage.getItem('essayHistory') || '[]'); } catch { return []; } },
-  saveEssayHistory(arr) { localStorage.setItem('essayHistory', JSON.stringify(arr)); },
+  getEssayHistory() { try { return JSON.parse(AppStorage.getItem('essayHistory') || '[]'); } catch { return []; } },
+  saveEssayHistory(arr) { AppStorage.setItem('essayHistory', JSON.stringify(arr)); },
   addEssaySession(entry) {
     // entry: { date, words:[{english,chinese,partOfSpeech}], essay, feedback, score, annotatedHtml }
     const history = this.getEssayHistory();
@@ -557,8 +555,8 @@ const DB = {
     return { added };
   },
   // ── AI Ask History ──
-  getAiAskHistory()         { try { return JSON.parse(localStorage.getItem('aiAskHistory') || '[]'); } catch { return []; } },
-  saveAiAskHistory(arr)     { localStorage.setItem('aiAskHistory', JSON.stringify(arr)); },
+  getAiAskHistory()         { try { return JSON.parse(AppStorage.getItem('aiAskHistory') || '[]'); } catch { return []; } },
+  saveAiAskHistory(arr)     { AppStorage.setItem('aiAskHistory', JSON.stringify(arr)); },
   addAiAskEntry(entry) {
     // entry: { id (YYMMDDHHMM), question, answer, ts }
     const history = this.getAiAskHistory();
@@ -603,32 +601,32 @@ const DB = {
     } else { history.push({ date, correct, wrong, total: totalWords, wrongWordDetails }); }
     this.saveHistory(history);
   },
-  getApiKey() { return localStorage.getItem('geminiApiKey') || ''; },
-  saveApiKey(key) { localStorage.setItem('geminiApiKey', key); },
+  getApiKey() { return AppStorage.getItem('geminiApiKey') || ''; },
+  saveApiKey(key) { AppStorage.setItem('geminiApiKey', key); },
   getModel() {
-    const saved = localStorage.getItem('geminiModel') || '';
+    const saved = AppStorage.getItem('geminiModel') || '';
     const validModels = (typeof Gemini !== 'undefined' && Gemini.AVAILABLE_MODELS)
       ? Gemini.AVAILABLE_MODELS.map(m => m.id)
       : [];
     if (saved && (!validModels.length || validModels.includes(saved))) return saved;
     const fallback = 'gemini-3.5-flash';
-    if (saved && validModels.length && !validModels.includes(saved)) localStorage.setItem('geminiModel', fallback);
+    if (saved && validModels.length && !validModels.includes(saved)) AppStorage.setItem('geminiModel', fallback);
     return fallback;
   },
-  saveModel(m) { localStorage.setItem('geminiModel', m); },
+  saveModel(m) { AppStorage.setItem('geminiModel', m); },
   // ── Google Drive config ──
-  getGDriveClientId()  { return localStorage.getItem('gdriveClientId') || ''; },
-  setGDriveClientId(v) { localStorage.setItem('gdriveClientId', v); },
-  getGDriveFolderId()  { return localStorage.getItem('gdriveFolderId') || ''; },
-  setGDriveFolderId(v) { localStorage.setItem('gdriveFolderId', v); },
-  getGDriveAutoSync()  { return localStorage.getItem('gdriveAutoSync') === '1'; },
-  setGDriveAutoSync(v) { localStorage.setItem('gdriveAutoSync', v ? '1' : '0'); },
-  getGDriveLastSync()  { return localStorage.getItem('gdriveLastSync') || ''; },
-  setGDriveLastSync(v) { localStorage.setItem('gdriveLastSync', v); },
-  getBoostedWords() { try { return JSON.parse(localStorage.getItem('boostedWords') || '[]'); } catch { return []; } },
-  saveBoostedWords(ids) { localStorage.setItem('boostedWords', JSON.stringify(ids)); },
-  getTtsDelay()    { return parseInt(localStorage.getItem('ttsDelay') || '300'); },
-  saveTtsDelay(ms) { localStorage.setItem('ttsDelay', String(ms)); },
+  getGDriveClientId()  { return AppStorage.getItem('gdriveClientId') || ''; },
+  setGDriveClientId(v) { AppStorage.setItem('gdriveClientId', v); },
+  getGDriveFolderId()  { return AppStorage.getItem('gdriveFolderId') || ''; },
+  setGDriveFolderId(v) { AppStorage.setItem('gdriveFolderId', v); },
+  getGDriveAutoSync()  { return AppStorage.getItem('gdriveAutoSync') === '1'; },
+  setGDriveAutoSync(v) { AppStorage.setItem('gdriveAutoSync', v ? '1' : '0'); },
+  getGDriveLastSync()  { return AppStorage.getItem('gdriveLastSync') || ''; },
+  setGDriveLastSync(v) { AppStorage.setItem('gdriveLastSync', v); },
+  getBoostedWords() { try { return JSON.parse(AppStorage.getItem('boostedWords') || '[]'); } catch { return []; } },
+  saveBoostedWords(ids) { AppStorage.setItem('boostedWords', JSON.stringify(ids)); },
+  getTtsDelay()    { return parseInt(AppStorage.getItem('ttsDelay') || '300'); },
+  saveTtsDelay(ms) { AppStorage.setItem('ttsDelay', String(ms)); },
   toggleBoost(id) {
     const b = this.getBoostedWords(); const idx = b.indexOf(id);
     if (idx === -1) b.push(id); else b.splice(idx, 1);
@@ -636,21 +634,21 @@ const DB = {
   },
   isBoosted(id) { return this.getBoostedWords().includes(id); },
   getTodaySentence() {
-    try { const s = JSON.parse(localStorage.getItem('todaySentence') || 'null'); return (s && s.date === todayStr()) ? s : null; }
+    try { const s = JSON.parse(AppStorage.getItem('todaySentence') || 'null'); return (s && s.date === todayStr()) ? s : null; }
     catch { return null; }
   },
-  saveTodaySentence(data) { localStorage.setItem('todaySentence', JSON.stringify({ ...data, date: todayStr() })); },
+  saveTodaySentence(data) { AppStorage.setItem('todaySentence', JSON.stringify({ ...data, date: todayStr() })); },
   // AI-generated sentence log
-  getSentenceLog() { try { return JSON.parse(localStorage.getItem('sentenceLog') || '[]'); } catch { return []; } },
+  getSentenceLog() { try { return JSON.parse(AppStorage.getItem('sentenceLog') || '[]'); } catch { return []; } },
   saveSentenceToLog(entry) {
     const log = this.getSentenceLog();
     log.unshift({ ...entry, id: Date.now().toString() });
     if (log.length > 120) log.length = 120;
-    localStorage.setItem('sentenceLog', JSON.stringify(log));
+    AppStorage.setItem('sentenceLog', JSON.stringify(log));
   },
   // Imported sentence bank (CSV)
-  getImportedSentences() { try { return JSON.parse(localStorage.getItem('importedSentences') || '[]'); } catch { return []; } },
-  saveImportedSentences(arr) { localStorage.setItem('importedSentences', JSON.stringify(arr)); },
+  getImportedSentences() { try { return JSON.parse(AppStorage.getItem('importedSentences') || '[]'); } catch { return []; } },
+  saveImportedSentences(arr) { AppStorage.setItem('importedSentences', JSON.stringify(arr)); },
   importSentencesCSV(text) {
     const records = this._splitCSVRecords(text.replace(/^\uFEFF/, '').trim());
     if (records.length < 2) return { added: 0, total: 0 };
@@ -859,22 +857,24 @@ const DB = {
 const Gemini = {
   // All selectable models (display name -> API id)
   AVAILABLE_MODELS: [
-    // Text-generation models available in Gemini API / AI Studio as of 2026/06.
-    // Removed retired preview/latest aliases; keep stable low-latency models first.
-    { label: 'Gemini 3.5 Flash',              id: 'gemini-3.5-flash',              tag: '推薦' },
-    { label: 'Gemini 3.1 Flash-Lite',         id: 'gemini-3.1-flash-lite',         tag: '快速' },
-    { label: 'Gemini 3 Flash Preview',        id: 'gemini-3-flash-preview',        tag: 'Preview' },
-    { label: 'Gemini 3.1 Pro Preview',        id: 'gemini-3.1-pro-preview',        tag: '高階' },
-    { label: 'Gemini 2.5 Flash',              id: 'gemini-2.5-flash',              tag: '備援' },
-    { label: 'Gemini 2.5 Flash-Lite',         id: 'gemini-2.5-flash-lite',         tag: '備援' },
-    { label: 'Gemini 2.5 Pro',                id: 'gemini-2.5-pro',                tag: '備援' },
+    { label: 'Gemini 3.5 Flash',      id: 'gemini-3.5-flash',      tag: '推薦・穩定', tier: 'stable' },
+    { label: 'Gemini 3.1 Flash-Lite', id: 'gemini-3.1-flash-lite', tag: '快速・穩定', tier: 'stable' },
+    { label: 'Gemini 2.5 Flash',      id: 'gemini-2.5-flash',      tag: '備援・穩定', tier: 'stable' },
+    { label: 'Gemini 2.5 Flash-Lite', id: 'gemini-2.5-flash-lite', tag: '省配額・穩定', tier: 'stable' },
+    { label: 'Gemini 2.5 Pro',        id: 'gemini-2.5-pro',        tag: '高階・穩定', tier: 'stable' },
+    { label: 'Gemini 3.1 Pro Preview', id: 'gemini-3.1-pro-preview', tag: '預覽', tier: 'preview' },
+    { label: 'Gemini 3 Flash Preview', id: 'gemini-3-flash-preview', tag: '預覽', tier: 'preview' },
   ],
 
-  // Returns model list with user-selected model first, then the rest as fallback
+  // Production fallback stays on stable endpoints. Preview models are tried only when explicitly selected.
   _getModelList() {
     const selected = DB.getModel();
-    const ids = this.AVAILABLE_MODELS.map(m => m.id);
-    return [...new Set([selected, ...ids])].filter(Boolean);
+    const selectedMeta = this.AVAILABLE_MODELS.find(m => m.id === selected);
+    const stableIds = this.AVAILABLE_MODELS.filter(m => m.tier === 'stable').map(m => m.id);
+    const previewIds = selectedMeta?.tier === 'preview'
+      ? this.AVAILABLE_MODELS.filter(m => m.tier === 'preview').map(m => m.id)
+      : [];
+    return [...new Set([selected, ...stableIds, ...previewIds])].filter(Boolean);
   },
 
   // Extract the actual response text, skipping "thought" parts from thinking models
@@ -920,25 +920,32 @@ const Gemini = {
     return null;
   },
 
-  async _callModel(model, body, apiKey) {
+  async _callModel(model, body, apiKey, attempt = 0) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 30000);
     let res;
     try {
       res = await fetch(
         `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
-        { method: 'POST', headers: { 'Content-Type': 'application/json' }, body }
+        { method: 'POST', headers: { 'Content-Type': 'application/json' }, body, signal: controller.signal }
       );
-    } catch {
+    } catch (error) {
+      if (error?.name === 'AbortError') throw new Error('API_TIMEOUT');
       throw new Error('NETWORK_ERROR');
+    } finally {
+      clearTimeout(timeoutId);
     }
     if (!res.ok) {
       let errMsg = `HTTP ${res.status}`;
       try { const d = await res.json(); errMsg = d.error?.message || errMsg; } catch {}
       const lower = String(errMsg).toLowerCase();
       const err = new Error(errMsg);
-      // Try the next model for unavailable/retired/quota/preview-permission issues,
-      // but keep API-key/auth errors visible so the user can fix settings.
       const apiKeyProblem = lower.includes('api key') || lower.includes('apikey') || lower.includes('permission denied') || lower.includes('authentication');
       const modelProblem = lower.includes('model') || lower.includes('not found') || lower.includes('not supported') || lower.includes('deprecated') || lower.includes('quota') || lower.includes('rate limit') || lower.includes('unavailable');
+      if (!apiKeyProblem && attempt < 1 && (res.status === 429 || res.status === 503)) {
+        await new Promise(resolve => setTimeout(resolve, 900));
+        return this._callModel(model, body, apiKey, attempt + 1);
+      }
       err.fallback = !apiKeyProblem && (res.status === 404 || res.status === 429 || res.status === 503 || (res.status === 400 && modelProblem));
       throw err;
     }
@@ -1407,7 +1414,7 @@ const GDrive = {
 
   isSignedIn() { return !!this._token && !this._isTokenExpired(); },
   hasRememberedSession() { return !!this.getUserEmail(); },
-  getUserEmail() { return this._email || localStorage.getItem(this.SESSION_KEYS.email) || ''; },
+  getUserEmail() { return this._email || AppStorage.getItem(this.SESSION_KEYS.email) || ''; },
   getSessionStatus() {
     if (this.isSignedIn()) return 'active';
     return this.hasRememberedSession() ? 'remembered' : 'none';
@@ -1433,9 +1440,9 @@ const GDrive = {
     });
   },
 
-  _sessionClientId() { return localStorage.getItem(this.SESSION_KEYS.clientId) || ''; },
-  _sessionScope() { return localStorage.getItem(this.SESSION_KEYS.scope) || ''; },
-  _expiry() { return parseInt(localStorage.getItem(this.SESSION_KEYS.expiry) || '0', 10) || 0; },
+  _sessionClientId() { return AppStorage.getItem(this.SESSION_KEYS.clientId) || ''; },
+  _sessionScope() { return AppStorage.getItem(this.SESSION_KEYS.scope) || ''; },
+  _expiry() { return parseInt(sessionStorage.getItem(this.SESSION_KEYS.expiry) || '0', 10) || 0; },
   _isTokenExpired() { return !this._token || Date.now() > this._expiry() - this.EXPIRY_MARGIN_MS; },
   _hasSameClientAndScope(clientId) {
     return this._sessionClientId() === clientId && this._sessionScope() === this.SCOPE;
@@ -1445,30 +1452,34 @@ const GDrive = {
     const exp = Date.now() + (Number(expiresIn) || 3500) * 1000;
     this._token = token;
     this._email = email || this.getUserEmail();
-    localStorage.setItem(this.SESSION_KEYS.token, token);
-    localStorage.setItem(this.SESSION_KEYS.email, this._email || '');
-    localStorage.setItem(this.SESSION_KEYS.expiry, String(exp));
-    localStorage.setItem(this.SESSION_KEYS.clientId, clientId || DB.getGDriveClientId());
-    localStorage.setItem(this.SESSION_KEYS.scope, this.SCOPE);
-    localStorage.setItem(this.SESSION_KEYS.lastLogin, new Date().toISOString());
+    // Access tokens are intentionally session-only and never written to localStorage/IndexedDB.
+    sessionStorage.setItem(this.SESSION_KEYS.token, token);
+    sessionStorage.setItem(this.SESSION_KEYS.expiry, String(exp));
+    AppStorage.setItem(this.SESSION_KEYS.email, this._email || '');
+    AppStorage.setItem(this.SESSION_KEYS.clientId, clientId || DB.getGDriveClientId());
+    AppStorage.setItem(this.SESSION_KEYS.scope, this.SCOPE);
+    AppStorage.setItem(this.SESSION_KEYS.lastLogin, new Date().toISOString());
   },
 
   _clearTokenOnly() {
     this._token = null;
-    localStorage.removeItem(this.SESSION_KEYS.token);
-    localStorage.removeItem(this.SESSION_KEYS.expiry);
+    sessionStorage.removeItem(this.SESSION_KEYS.token);
+    sessionStorage.removeItem(this.SESSION_KEYS.expiry);
   },
 
   _clearSession() {
     this._token = null;
     this._email = null;
-    Object.values(this.SESSION_KEYS).forEach(k => localStorage.removeItem(k));
+    sessionStorage.removeItem(this.SESSION_KEYS.token);
+    sessionStorage.removeItem(this.SESSION_KEYS.expiry);
+    [this.SESSION_KEYS.email, this.SESSION_KEYS.clientId, this.SESSION_KEYS.scope, this.SESSION_KEYS.lastLogin]
+      .forEach(k => AppStorage.removeItem(k));
   },
 
   tryRestoreFromStorage() {
     const clientId = DB.getGDriveClientId();
-    const token = localStorage.getItem(this.SESSION_KEYS.token);
-    const email = localStorage.getItem(this.SESSION_KEYS.email) || '';
+    const token = sessionStorage.getItem(this.SESSION_KEYS.token);
+    const email = AppStorage.getItem(this.SESSION_KEYS.email) || '';
     const exp = this._expiry();
     if (email) this._email = email;
     if (!token || !email || !clientId || !this._hasSameClientAndScope(clientId)) return false;
@@ -1583,51 +1594,42 @@ const GDrive = {
     this._clearSession();
   },
 
-  _buildPayload() {
+  _getDeviceId() {
+    let id = AppStorage.getItem('vocabDeviceId') || '';
+    if (!id) {
+      id = crypto.randomUUID?.() || `device-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      AppStorage.setItem('vocabDeviceId', id);
+    }
+    return id;
+  },
+
+  _buildCollections() {
     return {
-      words:        DB.getWords(),
-      history:      DB.getHistory(),
-      sentences:    DB.getSentenceLog(),
-      imported:     DB.getImportedSentences(),
-      boosted:      DB.getBoostedWords(),
+      words: DB.getWords(),
+      history: DB.getHistory(),
+      sentences: DB.getSentenceLog(),
+      imported: DB.getImportedSentences(),
+      boosted: DB.getBoostedWords(),
       readingQuizHistory: DB.getReadingQuizHistory(),
       essayHistory: DB.getEssayHistory(),
-      aiAskHistory: DB.getAiAskHistory(),
-      updatedAt:    new Date().toISOString(),
-      appVersion:   APP_DISPLAY_VERSION
+      aiAskHistory: DB.getAiAskHistory()
     };
   },
 
-  _countEssaySessions(essayHistory) {
-    return (Array.isArray(essayHistory) ? essayHistory : [])
-      .reduce((sum, h) => sum + (Array.isArray(h?.sessions) ? h.sessions.length : 0), 0);
-  },
-
-  _countReadingSessions(readingQuizHistory) {
-    return (Array.isArray(readingQuizHistory) ? readingQuizHistory : [])
-      .reduce((sum, h) => sum + (Array.isArray(h?.sessions) ? h.sessions.length : 0), 0);
+  _buildPayload() {
+    return BackupSchema.attach(this._buildCollections(), {
+      appVersion: APP_DISPLAY_VERSION,
+      deviceId: this._getDeviceId(),
+      revision: Date.now()
+    });
   },
 
   _countPayloadItems(data = {}) {
-    const counts = {
-      words:    Array.isArray(data.words) ? data.words.length : 0,
-      examples: (Array.isArray(data.sentences) ? data.sentences.length : 0)
-              + (Array.isArray(data.imported) ? data.imported.length : 0),
-      practice: Array.isArray(data.history) ? data.history.length : 0,
-      boosted:  Array.isArray(data.boosted) ? data.boosted.length : 0,
-      reading:  this._countReadingSessions(data.readingQuizHistory),
-      essay:    this._countEssaySessions(data.essayHistory),
-      aiAsk:    Array.isArray(data.aiAskHistory) ? data.aiAskHistory.length : 0
-    };
-    counts.total = Object.values(counts).reduce((sum, n) => sum + (Number(n) || 0), 0);
-    return counts;
+    return BackupSchema.counts(data);
   },
 
-  _shouldAutoRestore(localCounts, cloudCounts) {
-    const keys = ['words', 'examples', 'practice', 'boosted', 'reading', 'essay', 'aiAsk'];
-    const cloudHasLessInAnyCategory = keys.some(k => (cloudCounts[k] || 0) < (localCounts[k] || 0));
-    const cloudHasMoreInAnyCategory = keys.some(k => (cloudCounts[k] || 0) > (localCounts[k] || 0));
-    return cloudHasMoreInAnyCategory && !cloudHasLessInAnyCategory;
+  _comparePayloads(localData, cloudData) {
+    return BackupSchema.compare(localData, cloudData);
   },
 
   _formatCounts(counts = {}) {
@@ -1706,60 +1708,79 @@ const GDrive = {
       if (r.status === 401) { this._clearTokenOnly(); throw new Error('TOKEN_EXPIRED'); }
       throw new Error('DOWNLOAD_FAILED: ' + r.status);
     }
-    return r.json();
+    const data = await r.json();
+    const validation = BackupSchema.validate(data);
+    if (!validation.valid) throw new Error('BACKUP_INVALID_' + validation.reason);
+    return data;
   },
 
   async autoRestoreIfCloudHasMore(options = {}) {
     const files = await this.listBackups(options);
+    const localPayload = this._buildPayload();
     if (!files.length) {
-      return { status: 'no_backup', localCounts: this._countPayloadItems(this._buildPayload()), cloudCounts: null, file: null };
+      return { status: 'no_backup', localCounts: this._countPayloadItems(localPayload), cloudCounts: null, file: null };
     }
     const latestFile = files[0];
     const cloudData = await this.downloadFile(latestFile.id, options);
-    const localCounts = this._countPayloadItems(this._buildPayload());
-    const cloudCounts = this._countPayloadItems(cloudData || {});
-    const shouldRestore = this._shouldAutoRestore(localCounts, cloudCounts);
+    const comparison = this._comparePayloads(localPayload, cloudData);
 
-    if (!shouldRestore) {
-      return { status: 'skipped', localCounts, cloudCounts, file: latestFile };
+    if (comparison.same) {
+      return { status: 'same', ...comparison, file: latestFile };
+    }
+    if (comparison.conflict) {
+      return { status: 'conflict', ...comparison, file: latestFile };
+    }
+    if (!comparison.cloudIsStrictSuperset) {
+      return { status: 'skipped', ...comparison, file: latestFile };
+    }
+    if (AppStorage.getStatus().mode !== 'indexeddb') {
+      return { status: 'safety_blocked', ...comparison, file: latestFile };
     }
 
-    const syncedAt = this.applyDownload(cloudData, 'overwrite');
-    return { status: 'restored', syncedAt, localCounts, cloudCounts, file: latestFile };
+    await AppStorage.createRecoverySnapshot(localPayload, 'before-auto-cloud-restore');
+    const syncedAt = this.applyDownload(cloudData, 'overwrite', { skipSnapshot: true });
+    return { status: 'restored', syncedAt, ...comparison, file: latestFile };
   },
 
-  applyDownload(data, mode) {
+  applyDownload(data, mode, options = {}) {
+    const validation = BackupSchema.validate(data);
+    if (!validation.valid) throw new Error('BACKUP_INVALID_' + validation.reason);
+    const normalized = validation.collections;
+    if (!options.skipSnapshot) {
+      AppStorage.createRecoverySnapshot(this._buildPayload(), 'before-manual-cloud-restore').catch(() => {});
+    }
+    data = normalized;
     if (mode === 'overwrite') {
-      if (Array.isArray(data.words))        localStorage.setItem('vocabWords',        JSON.stringify(data.words));
-      if (Array.isArray(data.history))      localStorage.setItem('practiceHistory',   JSON.stringify(data.history));
-      if (Array.isArray(data.sentences))    localStorage.setItem('sentenceLog',       JSON.stringify(data.sentences));
-      if (Array.isArray(data.imported))     localStorage.setItem('importedSentences', JSON.stringify(data.imported));
-      if (Array.isArray(data.boosted))      localStorage.setItem('boostedWords',      JSON.stringify(data.boosted));
-      if (Array.isArray(data.readingQuizHistory)) localStorage.setItem('readingQuizHistory', JSON.stringify(data.readingQuizHistory));
-      if (Array.isArray(data.essayHistory)) localStorage.setItem('essayHistory',      JSON.stringify(data.essayHistory));
-      if (Array.isArray(data.aiAskHistory)) localStorage.setItem('aiAskHistory',      JSON.stringify(data.aiAskHistory));
+      if (Array.isArray(data.words))        AppStorage.setItem('vocabWords',        JSON.stringify(data.words));
+      if (Array.isArray(data.history))      AppStorage.setItem('practiceHistory',   JSON.stringify(data.history));
+      if (Array.isArray(data.sentences))    AppStorage.setItem('sentenceLog',       JSON.stringify(data.sentences));
+      if (Array.isArray(data.imported))     AppStorage.setItem('importedSentences', JSON.stringify(data.imported));
+      if (Array.isArray(data.boosted))      AppStorage.setItem('boostedWords',      JSON.stringify(data.boosted));
+      if (Array.isArray(data.readingQuizHistory)) AppStorage.setItem('readingQuizHistory', JSON.stringify(data.readingQuizHistory));
+      if (Array.isArray(data.essayHistory)) AppStorage.setItem('essayHistory',      JSON.stringify(data.essayHistory));
+      if (Array.isArray(data.aiAskHistory)) AppStorage.setItem('aiAskHistory',      JSON.stringify(data.aiAskHistory));
     } else {
       const lw = DB.getWords(); const cw = data.words || [];
       const merged = [...lw]; cw.forEach(w => { const key = String(w.english || w.wordEn || '').toLowerCase(); if (key && !merged.find(x => String(x.english || x.wordEn || '').toLowerCase() === key)) merged.push(w); });
-      localStorage.setItem('vocabWords', JSON.stringify(merged));
+      AppStorage.setItem('vocabWords', JSON.stringify(merged));
       const lh = DB.getHistory(); const ch = data.history || []; const hm = {};
       [...lh, ...ch].forEach(h => { if (!hm[h.date] || h.total > hm[h.date].total) hm[h.date] = h; });
-      localStorage.setItem('practiceHistory', JSON.stringify(Object.values(hm)));
+      AppStorage.setItem('practiceHistory', JSON.stringify(Object.values(hm)));
       const ls = DB.getSentenceLog(); const cs = data.sentences || [];
       const ss = new Set(ls.map(s => s.word + s.date));
-      localStorage.setItem('sentenceLog', JSON.stringify([...ls, ...cs.filter(s => !ss.has(s.word + s.date))]));
+      AppStorage.setItem('sentenceLog', JSON.stringify([...ls, ...cs.filter(s => !ss.has(s.word + s.date))]));
       const li = DB.getImportedSentences(); const ci = data.imported || [];
       const iss = new Set(li.map(s => s.word + s.english));
-      localStorage.setItem('importedSentences', JSON.stringify([...li, ...ci.filter(s => !iss.has(s.word + s.english))]));
+      AppStorage.setItem('importedSentences', JSON.stringify([...li, ...ci.filter(s => !iss.has(s.word + s.english))]));
       const lb = new Set(DB.getBoostedWords()); (data.boosted || []).forEach(id => lb.add(id));
-      localStorage.setItem('boostedWords', JSON.stringify([...lb]));
+      AppStorage.setItem('boostedWords', JSON.stringify([...lb]));
       if (Array.isArray(data.readingQuizHistory)) {
         const lr = DB.getReadingQuizHistory(); const rm = {};
         [...lr, ...data.readingQuizHistory].forEach(h => {
           if (!rm[h.date]) { rm[h.date] = { ...h, sessions: [...(h.sessions||[])] }; }
           else { const ex = new Set((rm[h.date].sessions||[]).map(s => String(s.ts || s.id || ''))); (h.sessions||[]).forEach(s => { const key = String(s.ts || s.id || ''); if (!ex.has(key)) { rm[h.date].sessions.push(s); ex.add(key); } }); }
         });
-        localStorage.setItem('readingQuizHistory', JSON.stringify(Object.values(rm)));
+        AppStorage.setItem('readingQuizHistory', JSON.stringify(Object.values(rm)));
       }
       if (Array.isArray(data.essayHistory)) {
         const le = DB.getEssayHistory(); const em = {};
@@ -1767,11 +1788,11 @@ const GDrive = {
           if (!em[h.date]) { em[h.date] = { ...h, sessions: [...(h.sessions||[])] }; }
           else { const ex = new Set((em[h.date].sessions||[]).map(s => s.ts)); (h.sessions||[]).forEach(s => { if (!ex.has(s.ts)) { em[h.date].sessions.push(s); ex.add(s.ts); } }); }
         });
-        localStorage.setItem('essayHistory', JSON.stringify(Object.values(em)));
+        AppStorage.setItem('essayHistory', JSON.stringify(Object.values(em)));
       }
       if (Array.isArray(data.aiAskHistory)) {
         const la = DB.getAiAskHistory(); const as = new Set(la.map(e => e.id));
-        localStorage.setItem('aiAskHistory', JSON.stringify([...la, ...data.aiAskHistory.filter(e => !as.has(e.id))]));
+        AppStorage.setItem('aiAskHistory', JSON.stringify([...la, ...data.aiAskHistory.filter(e => !as.has(e.id))]));
       }
     }
     const now = new Date().toLocaleString('zh-TW');
@@ -1783,7 +1804,7 @@ const GDrive = {
 // ===== UTILITIES =====
 function showToast(msg, duration = 2200) {
   let t = document.getElementById('toast');
-  if (!t) { t = document.createElement('div'); t.id='toast'; document.body.appendChild(t); }
+  if (!t) { t = document.createElement('div'); t.id='toast'; t.setAttribute('role','status'); t.setAttribute('aria-live','polite'); document.body.appendChild(t); }
   t.textContent = msg; t.classList.add('show');
   setTimeout(() => t.classList.remove('show'), duration);
 }
@@ -1800,11 +1821,14 @@ function escapeAttr(value) { return escapeHTML(value).replace(/`/g, '&#96;'); }
 const Modal = {
   show(html) {
     const o = document.getElementById('modal-overlay');
-    document.getElementById('modal-content').innerHTML = html;
+    const content = document.getElementById('modal-content');
+    content.innerHTML = html;
     o.classList.remove('hidden');
+    o.setAttribute('aria-hidden', 'false');
+    requestAnimationFrame(() => content.querySelector('button, input, select, textarea, [tabindex]')?.focus());
     o.onclick = (e) => { if (e.target === o) this.hide(); };
   },
-  hide() { document.getElementById('modal-overlay').classList.add('hidden'); }
+  hide() { const o = document.getElementById('modal-overlay'); o.classList.add('hidden'); o.setAttribute('aria-hidden','true'); }
 };
 function todayStr() {
   const d = new Date();
@@ -1840,10 +1864,16 @@ function highlightZh(text, wordZh) {
 }
 const TTS = {
   _synth: window.speechSynthesis || null,
-  _enabled: localStorage.getItem('ttsEnabled') !== 'false',
+  _enabled: AppStorage.getItem('ttsEnabled') !== 'false',
 
   get enabled() { return this._enabled; },
-  set enabled(v) { this._enabled = v; localStorage.setItem('ttsEnabled', v); },
+  set enabled(v) { this._enabled = v; AppStorage.setItem('ttsEnabled', v); },
+
+  stop() {
+    if (!this._synth) return;
+    this._synth.onvoiceschanged = null;
+    this._synth.cancel();
+  },
 
   speak(text, rate = 0.85) {
     if (!this._synth || !this._enabled) return;
@@ -2140,7 +2170,7 @@ Views.practice = {
     });
 
     document.getElementById('start-btn').addEventListener('click', () => {
-      Sound.unlock(); // Prime AudioContext on user gesture before quiz starts
+      void Sound.unlock(); // Prime AudioContext on user gesture before quiz starts
       const selected = selectWords(state.selectedCount, state.selectedMode, DB.getBoostedWords());
       if (!selected.length) { showToast('沒有可練習的單字'); return; }
       state.words = selected; state.currentIdx = 0; state.wrongWords = []; state.phase = 'quiz';
@@ -2172,12 +2202,13 @@ Views.practice = {
       // Keep a real input focused for the iOS keyboard, but make it visually inert.
       // type="text" avoids native search-field decoration work while typing.
       ghost.type = 'text';
-      ghost.style.cssText = `position:fixed;top:0;left:0;width:1px;height:1px;opacity:0;border:none;outline:none;background:transparent;color:transparent;caret-color:transparent;font-size:16px;z-index:-1;pointer-events:none;-webkit-appearance:none;appearance:none;`;
+      ghost.style.cssText = `position:fixed;left:50%;bottom:1px;width:1px;height:1px;opacity:0.01;border:0;padding:0;margin:0;outline:none;background:transparent;color:transparent;caret-color:transparent;font-size:16px;line-height:1;z-index:1;pointer-events:none;clip-path:inset(50%);transform:translateZ(0);-webkit-appearance:none;appearance:none;`;
       ghost.setAttribute('autocapitalize','none');
       ghost.setAttribute('autocorrect','off');
       ghost.setAttribute('autocomplete','off');
       ghost.setAttribute('spellcheck','false');
       ghost.setAttribute('inputmode','text');
+      ghost.setAttribute('lang','en');
       ghost.setAttribute('enterkeyhint','done');
       ghost.setAttribute('name', 'quiz-' + Date.now()); // unique name prevents browser autocomplete
       document.getElementById('app').appendChild(ghost);
@@ -2228,216 +2259,191 @@ Views.practice = {
     setTimeout(() => TTS.speakWhenReady(word.english, 0.82), ttsDelay);
   },
   buildLetterBoxes(word, container) {
-    const wrap = document.getElementById('letter-wrap'); if (!wrap) return;
-    wrap.innerHTML = '';
+    const wrap = document.getElementById('letter-wrap');
+    const ghost = this._ghost;
+    if (!wrap || !ghost) return;
+
     const wordParts = word.english.split(' ');
-    // Only count actual letters — hyphens/apostrophes are static separators
     const totalLetters = word.english.replace(/[^a-zA-Z]/g, '').length;
-    // Dynamic box size: fit all letters within available screen width
-    const GAP = 4; // gap between boxes
-    const PADDING = 48; // total horizontal padding
+    const GAP = 4;
+    const PADDING = 48;
     const maxWidth = (window.innerWidth || 390) - PADDING;
-    const longestPartLetters = Math.max(...wordParts.map(p => p.replace(/[^a-zA-Z]/g,'').length || 1));
-    const boxesPerRow = longestPartLetters; // base size on letter count only
-    const maxBoxSize = Math.floor((maxWidth - GAP * (boxesPerRow - 1)) / boxesPerRow);
-    let boxSize = Math.min(38, maxBoxSize);
-    // Enforce minimum readability
-    if (boxSize < 20) boxSize = 20;
+    const longestPartLetters = Math.max(...wordParts.map(part => part.replace(/[^a-zA-Z]/g, '').length || 1));
+    const maxBoxSize = Math.floor((maxWidth - GAP * (longestPartLetters - 1)) / longestPartLetters);
+    const boxSize = Math.max(20, Math.min(38, maxBoxSize));
     const fontSize = Math.round(boxSize * 0.52);
     const allBoxDivs = [];
-    wordParts.forEach((part, wi) => {
-      if (wi > 0) { const sep = document.createElement('div'); sep.className = 'word-separator'; sep.textContent = ' '; wrap.appendChild(sep); }
-      const group = document.createElement('div'); group.className = 'word-group';
-      [...part].forEach((ch) => {
+    const fragment = document.createDocumentFragment();
+
+    wordParts.forEach((part, wordIndex) => {
+      if (wordIndex > 0) {
+        const separator = document.createElement('div');
+        separator.className = 'word-separator';
+        separator.textContent = ' ';
+        fragment.appendChild(separator);
+      }
+      const group = document.createElement('div');
+      group.className = 'word-group';
+      [...part].forEach(ch => {
         const box = document.createElement('div');
         if (/[a-zA-Z]/.test(ch)) {
-          // Interactive input box
           box.className = 'letter-box-vis';
-          box.style.cssText = `width:${boxSize}px;height:${boxSize+6}px;font-size:${fontSize}px`;
+          box.style.width = `${boxSize}px`;
+          box.style.height = `${boxSize + 6}px`;
+          box.style.fontSize = `${fontSize}px`;
           allBoxDivs.push(box);
         } else {
-          // Static separator (hyphen, apostrophe, etc.) — never part of userInput
           box.className = 'letter-box-sep';
           box.textContent = ch;
-          box.style.cssText = `font-size:${Math.round(fontSize*1.1)}px;line-height:${boxSize+6}px`;
+          box.style.fontSize = `${Math.round(fontSize * 1.1)}px`;
+          box.style.lineHeight = `${boxSize + 6}px`;
         }
         group.appendChild(box);
       });
-      wrap.appendChild(group);
+      fragment.appendChild(group);
     });
-    const ghost = this._ghost; ghost.value = '';
-    // Clean up previous handlers. V6_1 uses beforeinput fast-path + input fallback.
-    if (ghost._beforeInputH) { ghost.removeEventListener('beforeinput', ghost._beforeInputH); ghost._beforeInputH = null; }
-    if (ghost._inputH)       { ghost.removeEventListener('input', ghost._inputH);             ghost._inputH = null;       }
-    if (ghost._keydownH)     { ghost.removeEventListener('keydown', ghost._keydownH);          ghost._keydownH = null;     }
+    wrap.replaceChildren(fragment);
 
-    // correctStr contains only letters — matches what the user can type.
+    // Remove handlers from the previous question/retry before binding the new ones.
+    if (ghost._beforeInputH)    ghost.removeEventListener('beforeinput', ghost._beforeInputH);
+    if (ghost._inputH)          ghost.removeEventListener('input', ghost._inputH);
+    if (ghost._keydownH)        ghost.removeEventListener('keydown', ghost._keydownH);
+    if (ghost._compositionStartH) ghost.removeEventListener('compositionstart', ghost._compositionStartH);
+    if (ghost._compositionEndH) ghost.removeEventListener('compositionend', ghost._compositionEndH);
+
     let userInput = '';
-    const maxLen = totalLetters;
-    const correctStr = word.english.replace(/[^a-zA-Z]/g,'').toLowerCase();
-
-    // Track previous box state to avoid unnecessary DOM writes.
-    const prevCls = new Array(allBoxDivs.length).fill('');
-    const prevTxt = new Array(allBoxDivs.length).fill('');
-    let lastRenderedInput = null;
+    let renderedInput = null;
     let evaluating = false;
+    let composing = false;
+    const maxLen = totalLetters;
+    const correctStr = this._norm(word.english);
+    const prevCls = new Array(allBoxDivs.length).fill(null);
+    const prevTxt = new Array(allBoxDivs.length).fill(null);
 
-    const writeBox = (i, cls, txt) => {
-      if (i < 0 || i >= allBoxDivs.length) return;
-      const box = allBoxDivs[i];
-      if (prevTxt[i] !== txt) { box.textContent = txt; prevTxt[i] = txt; }
-      if (prevCls[i] !== cls) { box.className = cls ? 'letter-box-vis ' + cls : 'letter-box-vis'; prevCls[i] = cls; }
+    ghost.value = '';
+    ghost.maxLength = maxLen;
+    ghost.readOnly = false;
+
+    const writeBox = (index, state, text) => {
+      if (index < 0 || index >= allBoxDivs.length) return;
+      const box = allBoxDivs[index];
+      const className = state ? `letter-box-vis ${state}` : 'letter-box-vis';
+      if (prevTxt[index] !== text) {
+        box.textContent = text;
+        prevTxt[index] = text;
+      }
+      if (prevCls[index] !== className) {
+        box.className = className;
+        prevCls[index] = className;
+      }
+    };
+
+    const paintIndex = (index, value) => {
+      if (index < value.length) writeBox(index, 'filled', value[index]);
+      else if (index === value.length && index < allBoxDivs.length) writeBox(index, 'cursor cursor-active', '');
+      else writeBox(index, '', '');
     };
 
     const updateDefaultVisual = () => {
-      const previous = lastRenderedInput;
       const next = userInput;
-
-      // First render: paint all boxes once.
+      const previous = renderedInput;
       if (previous === null) {
-        for (let i = 0; i < allBoxDivs.length; i++) {
-          if (i < next.length) writeBox(i, 'filled', next[i]);
-          else if (i === next.length) writeBox(i, 'cursor cursor-active', '');
-          else writeBox(i, '', '');
-        }
-        lastRenderedInput = next;
-        return;
+        for (let i = 0; i < allBoxDivs.length; i++) paintIndex(i, next);
+      } else if (next.length === previous.length + 1 && next.startsWith(previous)) {
+        // Common typing path: update only the old cursor/typed character and new cursor.
+        paintIndex(previous.length, next);
+        paintIndex(next.length, next);
+      } else if (previous.length === next.length + 1 && previous.startsWith(next)) {
+        // Common backspace path: update only the removed character/new cursor and old cursor.
+        paintIndex(next.length, next);
+        paintIndex(previous.length, next);
+      } else {
+        let firstChanged = 0;
+        const commonLength = Math.min(previous.length, next.length);
+        while (firstChanged < commonLength && previous[firstChanged] === next[firstChanged]) firstChanged++;
+        const lastChanged = Math.min(allBoxDivs.length - 1, Math.max(previous.length, next.length));
+        for (let i = firstChanged; i <= lastChanged; i++) paintIndex(i, next);
       }
-
-      // Incremental render: only update changed letters plus old/new cursor positions.
-      let firstChanged = 0;
-      const minLen = Math.min(previous.length, next.length);
-      while (firstChanged < minLen && previous[firstChanged] === next[firstChanged]) firstChanged++;
-
-      const indices = new Set();
-      const oldCursor = previous.length < allBoxDivs.length ? previous.length : -1;
-      const newCursor = next.length < allBoxDivs.length ? next.length : -1;
-      if (oldCursor >= 0) indices.add(oldCursor);
-      if (newCursor >= 0) indices.add(newCursor);
-      for (let i = firstChanged; i <= Math.max(previous.length, next.length); i++) indices.add(i);
-
-      indices.forEach(i => {
-        if (i < 0 || i >= allBoxDivs.length) return;
-        if (i < next.length) writeBox(i, 'filled', next[i]);
-        else if (i === next.length) writeBox(i, 'cursor cursor-active', '');
-        else writeBox(i, '', '');
-      });
-      lastRenderedInput = next;
+      renderedInput = next;
     };
 
     const updateVisual = (state = 'default') => {
       if (state === 'correct') {
         for (let i = 0; i < allBoxDivs.length; i++) writeBox(i, 'correct', correctStr[i] || '');
-        lastRenderedInput = userInput;
+        renderedInput = userInput;
         return;
       }
       if (state === 'wrong') {
         for (let i = 0; i < allBoxDivs.length; i++) writeBox(i, 'wrong', userInput[i] || '');
-        lastRenderedInput = userInput;
+        renderedInput = userInput;
         return;
       }
       updateDefaultVisual();
     };
 
-    const normalizeInput = (value) => (value || '').replace(/[^a-zA-Z]/g, '').toLowerCase().slice(0, maxLen);
+    const normalizeInput = value => (value || '').replace(/[^a-zA-Z]/g, '').toLowerCase().slice(0, maxLen);
 
-    const maybeEvaluate = () => {
+    const evaluate = () => {
       if (userInput.length < maxLen || evaluating) return;
       evaluating = true;
+      ghost.readOnly = true;
       const snapshot = userInput;
-      requestAnimationFrame(() => {
-        evaluating = false;
+      // A microtask keeps the final key visually immediate without adding a full frame of latency.
+      queueMicrotask(() => {
         if (this.state.showAnswer) return;
-        if (!this.state.waitingRetype)
+        if (!this.state.waitingRetype) {
           this._checkAnswer(word, snapshot, allBoxDivs, container, updateVisual, correctStr, maxLen);
-        else
+        } else {
           this._checkRetype(word, snapshot, allBoxDivs, container, updateVisual, correctStr);
+        }
       });
     };
 
-    const applyInput = (nextValue, syncGhost = true) => {
-      if (this.state.showAnswer) return;
-      const next = normalizeInput(nextValue);
-      if (next === userInput) {
-        if (syncGhost && ghost.value !== userInput) ghost.value = userInput;
-        return;
+    const applyNativeValue = () => {
+      if (this.state.showAnswer || composing || evaluating) return;
+      const raw = ghost.value;
+      const next = normalizeInput(raw);
+      // Normal English typing takes this zero-write path. Only invalid/overflow text
+      // is written back, avoiding iOS keyboard re-synchronisation on every keystroke.
+      if (raw !== next) {
+        ghost.value = next;
+        try { ghost.setSelectionRange(next.length, next.length); } catch {}
       }
+      if (next === userInput) return;
       userInput = next;
-      if (syncGhost && ghost.value !== userInput) ghost.value = userInput;
-      updateVisual();
-      maybeEvaluate();
+      updateDefaultVisual();
+      evaluate();
     };
 
-    // ── Input handling ──────────────────────────────────────────────────────────
-    // V6_1: beforeinput is used as a fast path, so the app updates the letter boxes
-    // before Safari finishes its native input rendering pipeline. To avoid the old
-    // iOS Chinese-keyboard double-letter bug, intermediate insertCompositionText is
-    // ignored and only committed text / deletion is processed. The input event stays
-    // as a fallback for browsers or IME paths that do not allow beforeinput canceling.
-    ghost._beforeInputH = (e) => {
-      if (this.state.showAnswer) return;
-      const type = e.inputType || '';
-
-      // Ignore intermediate IME composition. The committed value arrives later as
-      // insertFromComposition or via the normal input fallback.
-      if (e.isComposing || type === 'insertCompositionText') return;
-
-      if (type === 'deleteContentBackward') {
-        e.preventDefault();
-        applyInput(userInput.slice(0, -1));
-        return;
-      }
-
-      if (type === 'deleteContentForward' || type === 'deleteByCut') {
-        e.preventDefault();
-        return;
-      }
-
-      if (type === 'insertFromPaste') {
-        e.preventDefault();
-        const pasted = e.data || e.clipboardData?.getData?.('text') || e.dataTransfer?.getData?.('text') || '';
-        applyInput(userInput + pasted);
-        return;
-      }
-
-      if (type === 'insertText' || type === 'insertFromComposition' || type === '') {
-        const letters = normalizeInput(e.data || '');
-        if (!letters || userInput.length >= maxLen) {
-          e.preventDefault();
-          if (ghost.value !== userInput) ghost.value = userInput;
-          return;
-        }
-        e.preventDefault();
-        applyInput(userInput + letters);
-      }
+    // Do not prevent normal insert/delete operations. Let WebKit update the real input
+    // natively, then mirror its value to the visual boxes in the input event.
+    ghost._beforeInputH = event => {
+      if (this.state.showAnswer || evaluating) event.preventDefault();
     };
-
-    ghost._inputH = () => {
-      // Fallback path: browser/IME updated the hidden input itself.
-      applyInput(ghost.value, false);
-    };
-
-    // Hardware-keyboard fallback for environments where beforeinput is incomplete.
-    // Guard against double handling: normal mobile input is already covered above.
-    ghost._keydownH = (e) => {
-      if (this.state.showAnswer) return;
-      if (e.key === 'Backspace' && !e.isComposing && e.inputType === undefined && typeof InputEvent === 'undefined') {
-        e.preventDefault();
-        applyInput(userInput.slice(0, -1));
-      }
+    ghost._inputH = applyNativeValue;
+    ghost._compositionStartH = () => { composing = true; };
+    ghost._compositionEndH = () => { composing = false; applyNativeValue(); };
+    ghost._keydownH = event => {
+      if (event.key === 'Enter' && userInput.length < maxLen) event.preventDefault();
     };
 
     ghost.addEventListener('beforeinput', ghost._beforeInputH, { passive: false });
-    ghost.addEventListener('input', ghost._inputH);
+    ghost.addEventListener('input', ghost._inputH, { passive: true });
+    ghost.addEventListener('compositionstart', ghost._compositionStartH, { passive: true });
+    ghost.addEventListener('compositionend', ghost._compositionEndH, { passive: true });
     ghost.addEventListener('keydown', ghost._keydownH);
+
     ghost.style.pointerEvents = 'auto';
     wrap.style.cursor = 'text';
-    // Use .onclick assignment (not addEventListener) so it never accumulates across buildLetterBoxes calls.
-    wrap.onclick = (e) => { e.stopPropagation(); ghost.focus({ preventScroll: true }); };
-    const _qa = document.querySelector('.quiz-area');
-    if (_qa) { _qa.onclick = () => { if (this._ghost) this._ghost.focus({ preventScroll: true }); }; }
-    Sound.unlock(); // ensure AudioContext is running before first keystroke
-    ghost.focus({ preventScroll: true }); updateVisual();
+    wrap.onclick = event => {
+      event.stopPropagation();
+      ghost.focus({ preventScroll: true });
+    };
+    const quizArea = document.querySelector('.quiz-area');
+    if (quizArea) quizArea.onclick = () => ghost.focus({ preventScroll: true });
+
+    ghost.focus({ preventScroll: true });
+    updateDefaultVisual();
   },
   // Canonical answer normaliser — strips everything except a-z, lowercases
   _norm(s) { return (s || '').replace(/[^a-zA-Z]/g, '').toLowerCase(); },
@@ -2448,11 +2454,13 @@ Views.practice = {
     const isCorrect = this._norm(typed) === canonical;
 
     if (isCorrect) {
-      Sound.playCorrect(); updateVisual('correct');
+      TTS.stop();
+      void Sound.playCorrect(); updateVisual('correct');
       // Brief pause so the green animation is visible, then show the Next button
       requestAnimationFrame(() => requestAnimationFrame(() => this.showNextBtn(word, container)));
     } else {
-      Sound.playWrong(); updateVisual('wrong');
+      TTS.stop();
+      void Sound.playWrong(); updateVisual('wrong');
       if (!this.state.wrongWords.find(w => w.id === word.id)) {
         this.state.wrongWords.push(word);
         setTimeout(() => DB.updateWord(word.id, { wrongCount: (word.wrongCount||0)+1 }), 50);
@@ -2469,11 +2477,13 @@ Views.practice = {
   _checkRetype(word, typed, allBoxDivs, container, updateVisual, correctStr) {
     const isCorrect = this._norm(typed) === this._norm(word.english);
     if (isCorrect) {
-      Sound.playCorrect(); updateVisual('correct');
+      TTS.stop();
+      void Sound.playCorrect(); updateVisual('correct');
       this.state.waitingRetype = false;
       requestAnimationFrame(() => requestAnimationFrame(() => this.showNextBtn(word, container)));
     } else {
-      Sound.playWrong(); updateVisual('wrong');
+      TTS.stop();
+      void Sound.playWrong(); updateVisual('wrong');
       setTimeout(() => { this.buildLetterBoxes(word, container); }, 800);
     }
   },
@@ -2521,7 +2531,8 @@ Views.practice = {
     const state = this.state; const total = state.words.length; const wrongCount = state.wrongWords.length;
     const correctCount = total - wrongCount; const pct = total > 0 ? Math.round((correctCount/total)*100) : 0;
     DB.addPracticeSession(todayStr(), total, state.wrongWords.map(w=>({english:w.english,partOfSpeech:w.partOfSpeech,chinese:w.chinese})));
-    setTimeout(() => Sound.playResult(pct), 150);
+    TTS.stop();
+    setTimeout(() => { void Sound.playResult(pct); }, 120);
     container.innerHTML = `
       <div class="result-view">
         <div class="result-score">
@@ -2901,7 +2912,7 @@ Views.readingQuiz = {
 Views.database = {
   deleteMode: false, selectedIds: new Set(),
   aiCorrectMode: false, aiCorrectIds: new Set(),
-  sortMode: localStorage.getItem('dbSortMode') || 'createdAt',
+  sortMode: AppStorage.getItem('dbSortMode') || 'createdAt',
   render(container) { this.deleteMode = false; this.selectedIds = new Set(); this.aiCorrectMode = false; this.aiCorrectIds = new Set(); this.renderList(container); },
   // 僅更新單字列表區塊，不重整整頁（保留 ECDICT 搜尋結果）
   _refreshWordList(container) {
@@ -3434,7 +3445,7 @@ Views.database = {
     // Sort chips
     container.querySelectorAll('.db-sort-chip').forEach(btn => btn.addEventListener('click', () => {
       this.sortMode = btn.dataset.sort;
-      localStorage.setItem('dbSortMode', this.sortMode);
+      AppStorage.setItem('dbSortMode', this.sortMode);
       this.renderList(container);
     }));
     // Toolbar events
@@ -3554,14 +3565,14 @@ Views.database = {
               <span style="font-size:12px;color:var(--text-secondary);white-space:nowrap">詞性</span>
               <select class="ai-correct-pos" style="flex:1;padding:5px 8px;font-size:13px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text-primary)"
                 data-all-entries="${encodeURIComponent(JSON.stringify(r.entries))}">
-                ${r.entries.map((e, i) => `<option value="${i}" ${i===defIdx?'selected':''}>${e.pos}</option>`).join('')}
+                ${r.entries.map((e, i) => `<option value="${i}" ${i===defIdx?'selected':''}>${escapeHTML(e.pos)}</option>`).join('')}
               </select>
             </div>
             <div style="display:flex;gap:8px;align-items:center">
               <span style="font-size:12px;color:var(--text-secondary);white-space:nowrap">中文</span>
               <input class="ai-correct-zh" type="text"
                 style="flex:1;padding:5px 8px;font-size:13px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text-primary)"
-                value="${r.entries[defIdx].chinese.replace(/"/g,'&quot;')}">
+                value="${escapeAttr(r.entries[defIdx].chinese)}">
             </div>
           </div>`;
         }).join('')}
@@ -3636,10 +3647,10 @@ Views.database = {
   showEditModal(word, container) {
     const posOptions = ['n.','v.','adj.','adv.','prep.','conj.','pron.','interj.','phrase'];
     Modal.show(`<div class="modal-handle"></div><div class="modal-title">編輯單字</div>
-      <div class="form-group"><label class="form-label">英文單字</label><input class="form-input" id="edit-en" value="${word.english}" autocorrect="off" autocapitalize="off" spellcheck="false"></div>
+      <div class="form-group"><label class="form-label">英文單字</label><input class="form-input" id="edit-en" value="${escapeAttr(word.english)}" autocorrect="off" autocapitalize="off" spellcheck="false"></div>
       <div class="form-group"><label class="form-label">詞性</label><select class="form-select" id="edit-pos">${posOptions.map(p=>`<option ${p===word.partOfSpeech?'selected':''}>${p}</option>`).join('')}</select></div>
-      <div class="form-group"><label class="form-label">中文意思</label><input class="form-input" id="edit-zh" value="${word.chinese}"></div>
-      <div class="form-group"><label class="form-label">音標（可選）</label><input class="form-input" id="edit-phonetic" value="${word.phonetic||''}" autocorrect="off" autocapitalize="off"></div>
+      <div class="form-group"><label class="form-label">中文意思</label><input class="form-input" id="edit-zh" value="${escapeAttr(word.chinese)}"></div>
+      <div class="form-group"><label class="form-label">音標（可選）</label><input class="form-input" id="edit-phonetic" value="${escapeAttr(word.phonetic||'')}" autocorrect="off" autocapitalize="off"></div>
       <div class="form-group"><label class="form-label">頻率加權</label><select class="form-select" id="edit-weight">${[1,2,3,5].map(n=>`<option value="${n}" ${n===(word.frequencyWeight||1)?'selected':''}>${n}x${n===1?' (預設)':''}</option>`).join('')}</select></div>
       <div style="font-size:12px;color:var(--text-muted);margin-bottom:12px">答錯次數：${word.wrongCount||0} 次</div>
       <div class="modal-actions"><button class="modal-btn-cancel" id="cancel-edit">取消</button><button class="modal-btn-confirm" id="confirm-edit">儲存</button></div>`);
@@ -4280,15 +4291,11 @@ Views.stats = {
     }
     if(this.chartInstance) this.chartInstance.destroy();
     const ctx=document.getElementById('stats-chart'); if(!ctx) return;
-    this.chartInstance=new Chart(ctx,{
-      data:{labels:shortLabels,datasets:[
-        {type:'line',label:'正確率%',data:accuracyData,borderColor:'#f5a623',backgroundColor:'rgba(245,166,35,0.08)',borderWidth:2.5,pointRadius:4,pointBackgroundColor:'#f5a623',fill:false,tension:0.3,yAxisID:'yPct',spanGaps:true},
-        {type:'bar',label:'正確',data:correctData,backgroundColor:'rgba(26,122,74,0.7)',borderRadius:4,yAxisID:'y',stack:'answers'},
-        {type:'bar',label:'錯誤',data:wrongData,backgroundColor:'rgba(229,57,53,0.7)',borderRadius:4,yAxisID:'y',stack:'answers'}
-      ]},
-      options:{responsive:true,maintainAspectRatio:false,interaction:{mode:'index',intersect:false},
-        plugins:{legend:{labels:{font:{family:'Nunito',weight:'700',size:11},boxWidth:12,padding:12}},tooltip:{callbacks:{label(item){return item.dataset.label==='正確率%'?`正確率: ${item.raw??'—'}%`:`${item.dataset.label}: ${item.raw}`;}}}},
-        scales:{x:{ticks:{font:{family:'Nunito',size:10},maxRotation:45},grid:{display:false}},y:{beginAtZero:true,position:'left',ticks:{font:{family:'Nunito',size:10},stepSize:1},grid:{color:'rgba(0,0,0,0.05)'},title:{display:true,text:'題數',font:{family:'Nunito',size:10},color:'#6b8070'}},yPct:{beginAtZero:true,max:100,position:'right',ticks:{font:{family:'Nunito',size:10},callback:v=>`${v}%`},grid:{display:false},title:{display:true,text:'正確率',font:{family:'Nunito',size:10},color:'#f5a623'}}}}
+    this.chartInstance = TrendChart.create(ctx, {
+      labels: shortLabels,
+      correctData,
+      wrongData,
+      accuracyData
     });
   },
   renderEssayStats(container) {
@@ -4780,7 +4787,7 @@ Views.stats = {
   },
 
   showWrongModal(date, wrongWordDetails) {
-    Modal.show(`<div class="modal-handle"></div><div class="modal-title">${date} 答錯的單字</div><div style="font-size:13px;color:var(--text-muted);margin-bottom:12px">共 ${wrongWordDetails.length} 個</div><div style="max-height:55vh;overflow-y:auto;">${wrongWordDetails.map(w=>`<div class="wrong-word-card" style="margin-bottom:8px"><div class="wrong-word-en">${w.english}</div><div class="wrong-word-meta"><span class="wrong-word-pos">${w.partOfSpeech}</span><span class="wrong-word-zh">${w.chinese}</span></div></div>`).join('')}</div><div style="margin-top:16px"><button class="modal-btn-cancel" id="close-wrong-modal" style="width:100%">關閉</button></div>`);
+    Modal.show(`<div class="modal-handle"></div><div class="modal-title">${escapeHTML(date)} 答錯的單字</div><div style="font-size:13px;color:var(--text-muted);margin-bottom:12px">共 ${wrongWordDetails.length} 個</div><div style="max-height:55vh;overflow-y:auto;">${wrongWordDetails.map(w=>`<div class="wrong-word-card" style="margin-bottom:8px"><div class="wrong-word-en">${escapeHTML(w.english)}</div><div class="wrong-word-meta"><span class="wrong-word-pos">${escapeHTML(w.partOfSpeech)}</span><span class="wrong-word-zh">${escapeHTML(w.chinese)}</span></div></div>`).join('')}</div><div style="margin-top:16px"><button class="modal-btn-cancel" id="close-wrong-modal" style="width:100%">關閉</button></div>`);
     document.getElementById('close-wrong-modal').addEventListener('click', () => Modal.hide());
   }
 };
@@ -4801,6 +4808,8 @@ Views.settings = {
     const email       = GDrive.getUserEmail();
     const lastSync    = DB.getGDriveLastSync();
     const autoSync    = DB.getGDriveAutoSync();
+    const versionState = AppUpdater.getState();
+    const storageState = AppStorage.getStatus();
 
     const svgG  = '<svg viewBox="0 0 24 24" width="16" height="16" style="flex-shrink:0"><path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/><path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/><path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l3.66-2.84z"/><path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/></svg>';
     const svgUp = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" style="width:14px;height:14px"><polyline points="16 16 12 12 8 16"/><line x1="12" y1="12" x2="12" y2="21"/><path d="M20.39 18.39A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.3"/></svg>';
@@ -4832,7 +4841,7 @@ Views.settings = {
           ${(signedIn || remembered) ? `
             <div class="fb-status-row">
               <div class="fb-status-dot ${signedIn ? 'connected' : 'disconnected'}"></div>
-              <span class="fb-status-text">${signedIn ? '已登入' : '已記住帳號，待操作時自動續權'}：${email}</span>
+              <span class="fb-status-text">${signedIn ? '已登入' : '已記住帳號，待操作時自動續權'}：${escapeHTML(email)}</span>
             </div>
             ${lastSync ? '<div class="fb-last-sync" style="margin-bottom:10px">上次同步：' + lastSync + '</div>' : ''}
             <div class="settings-btn-row" style="margin-bottom:10px">
@@ -4843,10 +4852,11 @@ Views.settings = {
               <input type="checkbox" id="gd-auto-sync"${autoSync ? ' checked' : ''}>
               <span>每次開啟 APP 自動同步（雲端資料較多才自動還原）</span>
             </label>
+            <button class="btn-secondary" id="local-recovery-btn" style="width:100%;margin-top:9px">本機復原點</button>
             ${remembered ? '<div class="settings-tip" style="margin-top:8px">iOS PWA 關閉後可能需要 Google 再確認一次授權；本程式會保留帳號並在上傳/還原時自動續權，不會清空登入設定。</div>' : ''}
             <button class="btn-fb-signout-bottom" id="gd-signout-btn" style="margin-top:10px">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:15px;height:15px"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
-              登出 Google（${email}）
+              登出 Google（${escapeHTML(email)}）
             </button>
           ` : `
             <div class="fb-status-row" style="margin-bottom:8px">
@@ -5083,11 +5093,11 @@ Views.settings = {
         <div class="settings-card">
           <div class="api-subsection-label" style="margin-bottom:4px">OAuth Client ID</div>
           <div class="form-group" style="margin-bottom:8px">
-            <input type="text" class="form-input" id="gd-client-id-input" value="${clientId}" placeholder="xxxxxx.apps.googleusercontent.com" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
+            <input type="text" class="form-input" id="gd-client-id-input" value="${escapeAttr(clientId)}" placeholder="xxxxxx.apps.googleusercontent.com" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
           </div>
           <div class="api-subsection-label" style="margin-bottom:4px">Google Drive 資料夾 ID（選填）</div>
           <div class="form-group" style="margin-bottom:8px">
-            <input type="text" class="form-input" id="gd-folder-id-input" value="${folderId}" placeholder="留空則儲存到 Drive 根目錄" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
+            <input type="text" class="form-input" id="gd-folder-id-input" value="${escapeAttr(folderId)}" placeholder="留空則儲存到 Drive 根目錄" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
           </div>
           <div class="settings-btn-row">
             <button class="btn-primary" id="gd-save-cfg-btn" style="flex:1">儲存 Drive 設定</button>
@@ -5107,7 +5117,7 @@ Views.settings = {
           </div>
           <div class="form-group">
             <div class="input-with-toggle">
-              <input type="password" class="form-input" id="api-key-input" value="${savedKey}" placeholder="AIza...（Google AI Studio）">
+              <input type="password" class="form-input" id="api-key-input" value="${escapeAttr(savedKey)}" placeholder="AIza...（Google AI Studio）">
               <button class="toggle-visibility" id="toggle-vis"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg></button>
             </div>
           </div>
@@ -5136,9 +5146,12 @@ Views.settings = {
           版本資訊
         </div>
         <div class="settings-card" style="text-align:center">
-          <div style="color:var(--text-muted);font-size:13px;margin-bottom:12px">
-            英文單字複習 PWA &nbsp;·&nbsp; <strong style="color:var(--text-primary)">${APP_VERSION}</strong>
+          <div class="version-info-grid">
+            <div><span>當前版本</span><strong>${APP_DISPLAY_VERSION}</strong></div>
+            <div><span>最新版本</span><strong id="latest-version-value">${escapeHTML(versionState.latestVersion)}</strong></div>
+            <div><span>資料儲存</span><strong>${storageState.mode === 'indexeddb' ? 'IndexedDB V7' : '相容模式'}</strong></div>
           </div>
+          <div id="version-last-check" class="version-last-check">${versionState.lastCheckedAt ? '最後檢查：' + new Date(versionState.lastCheckedAt).toLocaleString('zh-TW') : '尚未檢查更新'}</div>
           <button class="btn-secondary" id="check-update-btn" style="width:100%;margin-bottom:8px">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px;margin-right:6px"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
             檢查更新
@@ -5183,7 +5196,7 @@ Views.settings = {
     document.getElementById('clear-vocab-btn')?.addEventListener('click', () => {
       confirmClear('清除單字資料庫',
         `確定要清除全部 ${totalWords} 個單字嗎？此操作無法復原，建議先匯出備份。`,
-        () => { DB.saveWords([]); localStorage.removeItem('boostedWords'); showToast('已清除單字資料庫'); this.render(container); });
+        () => { DB.saveWords([]); AppStorage.removeItem('boostedWords'); showToast('已清除單字資料庫'); this.render(container); });
     });
 
     // ── 3. 例句 ──
@@ -5253,7 +5266,7 @@ Views.settings = {
       if (!words.length && !sentCsv.includes('\n') && !statHistory.length && !readingHistory.length && !DB.getEssayHistory().length && !DB.getAiAskHistory().length) { showToast('尚無資料可匯出'); return; }
       showToast('⏳ 正在打包...', 1800);
       try {
-        const zip = new JSZip();
+        const zip = new window.JSZip();
         if (words.length)           zip.file(`vocab_${dateTag}.csv`,     '\uFEFF' + DB.exportCSV());
         if (sentCsv.includes('\n')) zip.file(`sentences_${dateTag}.csv`, '\uFEFF' + sentCsv);
         if (statHistory.length)     zip.file(`stats_${dateTag}.csv`,     '\uFEFF' + DB.exportStatsCSV());
@@ -5332,7 +5345,7 @@ Views.settings = {
           // ── ZIP: extract all CSV files inside ──
           try {
             const buffer = await readAsBuffer(file);
-            const zip = await JSZip.loadAsync(buffer);
+            const zip = await window.JSZip.loadAsync(buffer);
             const csvFiles = Object.values(zip.files).filter(f => !f.dir && f.name.toLowerCase().endsWith('.csv'));
             if (csvFiles.length === 0) { unknown.push(file.name + '（ZIP 內無 CSV）'); continue; }
             for (const csvFile of csvFiles) {
@@ -5449,8 +5462,8 @@ Views.settings = {
             meta = parts.join('・');
           } catch {}
           return `<button class="fb-slot-btn" data-fid="${f.id}" style="width:100%;text-align:left;padding:10px 12px;border-radius:10px;border:1.5px solid var(--border);background:var(--bg);cursor:pointer;margin-bottom:6px">
-            <div style="font-weight:700;font-size:13px;color:var(--text-primary)">${ts}${tag}</div>
-            ${meta ? '<div style="font-size:12px;color:var(--primary);margin-top:2px">' + meta + '</div>' : ''}
+            <div style="font-weight:700;font-size:13px;color:var(--text-primary)">${escapeHTML(ts)}${tag}</div>
+            ${meta ? '<div style="font-size:12px;color:var(--primary);margin-top:2px">' + escapeHTML(meta) + '</div>' : ''}
           </button>`;
         }).join('');
         Modal.show(`<div class="modal-handle"></div>
@@ -5500,45 +5513,62 @@ Views.settings = {
       showToast(e.target.checked ? '✓ 已開啟自動同步：雲端資料較多時會自動還原' : '已關閉自動同步');
     });
 
+    // ── 本機復原點（雲端覆寫前自動建立，最多保留 5 份） ──
+    document.getElementById('local-recovery-btn')?.addEventListener('click', async () => {
+      const snapshots = await AppStorage.listRecoverySnapshots();
+      if (!snapshots.length) { showToast('目前尚無本機復原點'); return; }
+      const rows = snapshots.map((item, index) => {
+        const counts = BackupSchema.counts(item.payload || {});
+        const when = item.createdAt ? new Date(item.createdAt).toLocaleString('zh-TW') : '—';
+        return `<button class="local-recovery-item" data-snapshot-id="${escapeAttr(item.id)}">
+          <strong>${escapeHTML(when)}${index === 0 ? '（最新）' : ''}</strong>
+          <span>${escapeHTML(item.reason || 'restore')}・單字 ${counts.words}・例句 ${counts.examples}・練習 ${counts.practice}</span>
+        </button>`;
+      }).join('');
+      Modal.show(`<div class="modal-handle"></div><div class="modal-title">本機復原點</div>
+        <p style="font-size:12px;color:var(--text-muted);margin-bottom:10px">雲端覆寫前會自動建立，最多保留 5 份。</p>
+        <div class="local-recovery-list">${rows}</div>
+        <button class="modal-btn-cancel" id="recovery-close" style="width:100%;margin-top:10px">取消</button>`);
+      document.getElementById('recovery-close')?.addEventListener('click', () => Modal.hide());
+      document.querySelectorAll('.local-recovery-item').forEach(button => {
+        button.addEventListener('click', () => {
+          const item = snapshots.find(snapshot => snapshot.id === button.dataset.snapshotId);
+          if (!item) return;
+          GDrive.applyDownload(item.payload, 'overwrite');
+          Modal.hide();
+          showToast('✓ 已還原本機復原點');
+          this.render(container);
+        });
+      });
+    });
+
     // ── 檢查更新 ──
     document.getElementById('check-update-btn')?.addEventListener('click', async () => {
-      const btn    = document.getElementById('check-update-btn');
+      const btn = document.getElementById('check-update-btn');
       const status = document.getElementById('update-status');
+      const latest = document.getElementById('latest-version-value');
+      const lastCheck = document.getElementById('version-last-check');
       if (!btn || !status) return;
       btn.disabled = true;
       status.textContent = '檢查中…';
-      const LOCAL_VER = APP_VERSION;
       try {
-        // Fetch version.json first; it is easier to maintain than parsing sw.js.
-        const versionUrl = './version.json?t=' + Date.now();
-        const r = await fetch(versionUrl, { cache: 'no-store' });
-        if (!r.ok) throw new Error('fetch_failed');
-        const remoteData = await r.json();
-        const remoteVer = remoteData.version || remoteData.displayVersion || '';
-        const remoteDisplay = remoteData.displayVersion || remoteVer;
-        if (!remoteVer) throw new Error('parse_failed');
-        if (remoteVer === LOCAL_VER) {
+        const result = await AppUpdater.check({ autoApply: false });
+        if (latest) latest.textContent = result.remoteDisplay;
+        if (lastCheck) lastCheck.textContent = '最後檢查：' + new Date(result.checkedAt).toLocaleString('zh-TW');
+        if (!result.hasUpdate) {
           status.textContent = '✓ 已是最新版本（' + APP_DISPLAY_VERSION + '）';
         } else {
-          status.innerHTML = '發現新版本：<strong>' + escapeHTML(remoteDisplay) + '</strong>　<button id="do-update-btn" style="font-size:12px;padding:2px 10px;border-radius:8px;border:1.5px solid var(--primary);background:var(--primary);color:#fff;cursor:pointer">立即更新</button>';
+          status.innerHTML = '發現新版本：<strong>' + escapeHTML(result.remoteDisplay) + '</strong>　<button id="do-update-btn" class="inline-update-btn">立即更新</button>';
           document.getElementById('do-update-btn')?.addEventListener('click', async () => {
-            status.textContent = '更新中，請稍候…';
-            if ('serviceWorker' in navigator) {
-              const regs = await navigator.serviceWorker.getRegistrations();
-              for (const reg of regs) await reg.unregister();
-            }
-            if ('caches' in window) {
-              const keys = await caches.keys();
-              await Promise.all(keys.map(k => caches.delete(k)));
-            }
-            showToast('✓ 更新完成，重新載入中…', 2000);
-            setTimeout(() => location.reload(), 1800);
+            status.textContent = '更新中，完成後將自動重新載入…';
+            await AppUpdater.applyUpdate();
           });
         }
-      } catch (e) {
+      } catch (error) {
         status.textContent = '檢查失敗，請確認網路連線';
+      } finally {
+        btn.disabled = false;
       }
-      btn.disabled = false;
     });
   }
 };
@@ -5546,6 +5576,19 @@ Views.settings = {
 // INIT
 // ===========================
 document.addEventListener('DOMContentLoaded', async () => {
+  await AppStorage.init();
+  await AppUpdater.register();
+
+  const offlineBanner = document.getElementById('offline-banner');
+  const updateNetworkState = () => {
+    if (!offlineBanner) return;
+    offlineBanner.hidden = navigator.onLine;
+    document.documentElement.classList.toggle('is-offline', !navigator.onLine);
+  };
+  window.addEventListener('online', updateNetworkState);
+  window.addEventListener('offline', updateNetworkState);
+  updateNetworkState();
+
   document.querySelectorAll('.nav-btn').forEach(btn => {
     btn.addEventListener('click', () => Router.navigate(btn.dataset.view));
   });
@@ -5559,6 +5602,13 @@ document.addEventListener('DOMContentLoaded', async () => {
         const syncResult = await GDrive.autoRestoreIfCloudHasMore();
         if (syncResult.status === 'restored') {
           showToast('✓ 已自動同步雲端最新備份', 2800);
+        } else if (syncResult.status === 'conflict') {
+          console.warn('[GDrive] Auto-sync conflict detected.', syncResult);
+          showToast('雲端與本機資料各有差異，為保護資料未自動覆寫', 3800);
+        } else if (syncResult.status === 'same') {
+          console.info('[GDrive] Local and cloud backup are identical.');
+        } else if (syncResult.status === 'safety_blocked') {
+          showToast('本機復原點無法使用，為保護資料未自動覆寫', 3600);
         } else if (syncResult.status === 'skipped') {
           console.info('[GDrive] Auto-sync skipped. Local:', GDrive._formatCounts(syncResult.localCounts), 'Cloud:', GDrive._formatCounts(syncResult.cloudCounts));
           showToast('本機資料未少於雲端，不自動更新', 2600);
@@ -5609,4 +5659,21 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
 
   Router._doNavigate('home');
+
+  // Automatically check and apply new versions without requiring a settings-page visit.
+  setTimeout(async () => {
+    try {
+      const result = await AppUpdater.check({ autoApply: false });
+      if (result.hasUpdate) {
+        showToast('發現新版本 ' + result.remoteDisplay + '，正在自動更新…', 3200);
+        await AppUpdater.applyUpdate();
+      }
+    } catch (error) {
+      console.info('[VersionManager] Startup update check skipped:', error.message);
+    }
+  }, 700);
+
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') AppStorage.flush();
+  });
 });

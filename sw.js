@@ -1,63 +1,82 @@
-const CACHE_NAME = 'Voc-PWA-V6_6';
-const ASSETS = [
+const CACHE_PREFIX = 'Voc-PWA-';
+const CACHE_NAME = 'Voc-PWA-V7_0_2';
+const APP_SHELL = [
   './',
   './index.html',
-  './style.css',
-  './app.js',
-  './manifest.json',
+  './style.css?v=V7_0_2',
+  './app.js?v=V7_0_2',
+  './manifest.json?v=V7_0_2',
   './version.json',
+  './storage.js',
+  './backup-schema.js',
+  './version-manager.js',
+  './chart-renderer.js',
+  './jszip.min.js?v=3_10_1',
   './icon-192.png',
   './icon-512.png'
 ];
 
-// Install: cache the app shell, then activate immediately.
 self.addEventListener('install', event => {
-  event.waitUntil(
-    caches.open(CACHE_NAME)
-      .then(cache => cache.addAll(ASSETS))
-      .then(() => self.skipWaiting())
-  );
+  event.waitUntil(caches.open(CACHE_NAME).then(cache => cache.addAll(APP_SHELL)));
 });
 
-// Activate: delete old app caches, claim clients, then notify open pages.
+self.addEventListener('message', event => {
+  if (event.data?.type === 'SKIP_WAITING') self.skipWaiting();
+});
+
 self.addEventListener('activate', event => {
-  event.waitUntil(
-    caches.keys()
-      .then(keys => Promise.all(keys.filter(k => k !== CACHE_NAME).map(k => caches.delete(k))))
-      .then(() => self.clients.claim())
-      .then(() => self.clients.matchAll({ type: 'window' }))
-      .then(clients => clients.forEach(client => client.postMessage({ type: 'SW_UPDATED', version: CACHE_NAME })))
-  );
+  event.waitUntil((async () => {
+    const keys = await caches.keys();
+    await Promise.all(
+      keys
+        .filter(key => key.startsWith(CACHE_PREFIX) && key !== CACHE_NAME)
+        .map(key => caches.delete(key))
+    );
+    await self.clients.claim();
+    const clients = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+    clients.forEach(client => client.postMessage({ type: 'SW_ACTIVATED', version: CACHE_NAME }));
+  })());
 });
 
-// Fetch: same-origin app files use network-first with cache fallback.
-// External APIs/CDNs are never intercepted so Google sign-in, Drive, Gemini, fonts, and CDN libraries stay online-first.
+async function networkFirst(request, fallbackUrl) {
+  try {
+    const response = await fetch(request);
+    if (response?.ok) {
+      const cache = await caches.open(CACHE_NAME);
+      cache.put(request, response.clone()).catch(() => {});
+    }
+    return response;
+  } catch {
+    return (await caches.match(request)) || (fallbackUrl ? await caches.match(fallbackUrl) : Response.error());
+  }
+}
+
+async function cacheFirst(request) {
+  const cached = await caches.match(request);
+  if (cached) return cached;
+  const response = await fetch(request);
+  if (response?.ok) {
+    const cache = await caches.open(CACHE_NAME);
+    cache.put(request, response.clone()).catch(() => {});
+  }
+  return response;
+}
+
 self.addEventListener('fetch', event => {
   if (event.request.method !== 'GET') return;
   const url = new URL(event.request.url);
   if (url.origin !== self.location.origin) return;
 
-  if (event.request.mode === 'navigate') {
-    event.respondWith(
-      fetch(event.request)
-        .then(response => {
-          if (response.ok) caches.open(CACHE_NAME).then(cache => cache.put('./index.html', response.clone()));
-          return response;
-        })
-        .catch(() => caches.match('./index.html'))
-    );
+  if (url.pathname.endsWith('/version.json')) {
+    event.respondWith(fetch(event.request, { cache: 'no-store' }));
     return;
   }
 
-  event.respondWith(
-    fetch(event.request)
-      .then(response => {
-        if (response && response.ok) {
-          const clone = response.clone();
-          caches.open(CACHE_NAME).then(cache => cache.put(event.request, clone));
-        }
-        return response;
-      })
-      .catch(() => caches.match(event.request))
-  );
+  if (event.request.mode === 'navigate') {
+    event.respondWith(networkFirst(event.request, './index.html'));
+    return;
+  }
+
+  const isStatic = /\.(?:js|css|json|png|svg|webp|ico)$/i.test(url.pathname);
+  event.respondWith(isStatic ? cacheFirst(event.request) : networkFirst(event.request));
 });
