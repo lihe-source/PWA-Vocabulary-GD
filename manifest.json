@@ -1,8 +1,8 @@
 {
   "id": "./",
-  "name": "英文單字複習 V7.0.3",
+  "name": "英文單字複習 V7.0.4",
   "short_name": "英文複習",
-  "description": "使用 Gemini AI、IndexedDB 與 Google Drive 備份的英文單字複習 PWA V7.0.3",
+  "description": "使用 Gemini AI、IndexedDB 與 Google Drive 備份的英文單字複習 PWA V7.0.4",
   "start_url": "./index.html",
   "scope": "./",
   "display": "standalone",

@@ -1,29 +1,42 @@
-import { AppStorage } from './storage.js';
-import { BackupSchema } from './backup-schema.js';
-import { VersionManager } from './version-manager.js';
-import { TrendChart } from './chart-renderer.js';
+import { AppStorage } from './storage.js?v=V7_0_4';
+import { BackupSchema } from './backup-schema.js?v=V7_0_4';
+import { VersionManager } from './version-manager.js?v=V7_0_4';
+import { TrendChart } from './chart-renderer.js?v=V7_0_4';
 
 // ===========================
-// 英文單字複習 PWA - app.js V7_0_3
+// 英文單字複習 PWA - app.js V7_0_4
 // V7：IndexedDB 資料層、備份驗證、OAuth Token 安全化、自動更新
 // ===========================
 
-const APP_VERSION = 'V7_0_3';
-const APP_DISPLAY_VERSION = 'V7.0.3';
-const APP_CACHE_VERSION = 'Voc-PWA-V7_0_3';
+const APP_VERSION = 'V7_0_4';
+const APP_DISPLAY_VERSION = 'V7.0.4';
+const APP_CACHE_VERSION = 'Voc-PWA-V7_0_4';
+const canActivateAppUpdate = () => {
+  if (document.querySelector('#quiz-ghost-input, .essay-textarea, .reading-quiz-shell, .reading-loading, .ai-loading')) return false;
+  const aiAskInput = document.querySelector('.aiask-textarea');
+  return !String(aiAskInput?.value || '').trim();
+};
 const AppUpdater = new VersionManager({
   currentVersion: APP_VERSION,
   displayVersion: APP_DISPLAY_VERSION,
   cachePrefix: 'Voc-PWA-',
   versionUrl: './version.json',
-  storage: AppStorage
+  storage: AppStorage,
+  canActivate: canActivateAppUpdate
 });
+const resumeAppUpdateWhenSafe = () => {
+  void AppStorage.flush().then(() => {
+    void AppUpdater.activateWaitingIfSafe();
+    void AppUpdater.reloadIfSafe();
+  });
+};
 
 // ===== Web Audio Sound Effects =====
 // iOS/PWA note: speechSynthesis can interrupt Web Audio.  Keep one low-latency
 // context, explicitly unlock it from user gestures, and resume it before every cue.
 const Sound = {
   ctx: null,
+  _unlockPromise: null,
   lastError: '',
   lastPlayed: '',
   lastPlayedAt: '',
@@ -69,6 +82,17 @@ const Sound = {
       const ctx = this._getCtx();
       if (!ctx) return Promise.resolve(false);
 
+      // A running context is already ready. Avoid creating a silent oscillator on
+      // every question and every key press, which is costly on iOS PWAs.
+      if (ctx.state === 'running') {
+        this.lastError = '';
+        return Promise.resolve(true);
+      }
+
+      // pointerdown/touch/keydown can describe the same physical gesture. Share
+      // one resume attempt so suspended contexts do not accumulate audio nodes.
+      if (this._unlockPromise) return this._unlockPromise;
+
       try {
         const osc = ctx.createOscillator();
         const gain = ctx.createGain();
@@ -79,14 +103,8 @@ const Sound = {
         osc.stop(ctx.currentTime + 0.015);
       } catch {}
 
-      if (ctx.state === 'running') {
-        this.lastError = '';
-        this._emitStatus();
-        return Promise.resolve(true);
-      }
-
       const resumed = ctx.resume();
-      return Promise.resolve(resumed).then(() => {
+      this._unlockPromise = Promise.resolve(resumed).then(() => {
         const ready = ctx.state === 'running';
         this.lastError = ready ? '' : `AudioContext 狀態：${ctx.state}`;
         this._emitStatus();
@@ -95,8 +113,12 @@ const Sound = {
         this.lastError = error?.message || '無法啟用音效';
         this._emitStatus();
         return false;
+      }).finally(() => {
+        this._unlockPromise = null;
       });
+      return this._unlockPromise;
     } catch (error) {
+      this._unlockPromise = null;
       this.lastError = error?.message || '音效初始化失敗';
       this._emitStatus();
       return Promise.resolve(false);
@@ -214,11 +236,21 @@ const Sound = {
 
 // Prime/resume Web Audio from genuine user gestures. This is especially important
 // after iOS speech synthesis or returning to the PWA from the background.
+let lastQuizSoundPrimeAt = 0;
 const primeQuizSound = () => {
-  if (!Sound.ctx || Sound.ctx.state !== 'running') void Sound.unlock();
+  // Keep the global listeners dormant outside the spelling quiz.
+  if (!document.getElementById('quiz-ghost-input')) return;
+  if (Sound.ctx?.state === 'running') return;
+  const now = Date.now();
+  if (now - lastQuizSoundPrimeAt < 750) return;
+  lastQuizSoundPrimeAt = now;
+  void Sound.unlock();
 };
-document.addEventListener('pointerdown', primeQuizSound, { passive: true, capture: true });
-document.addEventListener('touchstart', primeQuizSound, { passive: true, capture: true });
+if ('PointerEvent' in window) {
+  document.addEventListener('pointerdown', primeQuizSound, { passive: true, capture: true });
+} else {
+  document.addEventListener('touchstart', primeQuizSound, { passive: true, capture: true });
+}
 document.addEventListener('keydown', primeQuizSound, { passive: true, capture: true });
 
 // ===== ECDICT IndexedDB Module =====
@@ -506,6 +538,19 @@ const DB = {
   updateWord(id, data) {
     const words = this.getWords(); const idx = words.findIndex(w => w.id === id);
     if (idx !== -1) { words[idx] = { ...words[idx], ...data }; this.saveWords(words); return words[idx]; }
+  },
+  incrementWrongCounts(ids) {
+    const pending = new Set((ids || []).map(id => String(id)));
+    if (!pending.size) return 0;
+    const words = this.getWords();
+    let changed = 0;
+    words.forEach(word => {
+      if (!pending.has(String(word.id))) return;
+      word.wrongCount = (Number(word.wrongCount) || 0) + 1;
+      changed++;
+    });
+    if (changed) this.saveWords(words);
+    return changed;
   },
   deleteWords(ids) { this.saveWords(this.getWords().filter(w => !ids.includes(w.id))); },
   getHistory() { try { return JSON.parse(AppStorage.getItem('practiceHistory') || '[]'); } catch { return []; } },
@@ -1952,6 +1997,10 @@ const TTS = {
   get enabled() { return this._enabled; },
   set enabled(v) { this._enabled = v; AppStorage.setItem('ttsEnabled', v); },
 
+  cancelPending() {
+    if (this._synth) this._synth.onvoiceschanged = null;
+  },
+
   stop() {
     if (!this._synth) return;
     this._synth.onvoiceschanged = null;
@@ -2012,6 +2061,7 @@ const Router = {
     this._doNavigate(view, params);
   },
   _doNavigate(view, params) {
+    if (this.currentView === 'practice') Views.practice?.cleanupQuiz?.();
     document.querySelectorAll('.nav-btn').forEach(btn => btn.classList.toggle('active', btn.dataset.view === view));
     this.currentView = view;
     const container = document.getElementById('view-container');
@@ -2020,7 +2070,10 @@ const Router = {
     viewDiv.id = `${view}-view`; viewDiv.className = 'view-enter';
     container.appendChild(viewDiv);
     Views[view].render(viewDiv, params);
-    setTimeout(() => window.updateScrollFabs?.(), 0);
+    setTimeout(() => {
+      window.updateScrollFabs?.();
+      resumeAppUpdateWhenSafe();
+    }, 0);
   }
 };
 
@@ -2201,7 +2254,103 @@ function bindPracticeModeSelector(container, currentMode = 'quiz') {
 // ===========================
 Views.practice = {
   state: { selectedCount: 10, selectedMode: 'all', phase: 'setup', words: [], currentIdx: 0, wrongWords: [], showAnswer: false, waitingRetype: false },
-  render(container) { this.state.phase = 'setup'; this.renderSetup(container); },
+  _pendingWrongIds: new Set(),
+  _ttsTimer: null,
+  _retryTimer: null,
+  _answerTimer: null,
+  _resultTimer: null,
+  _sessionSaveTimer: null,
+  _pendingSessionSave: null,
+  _canQueueAdvance: false,
+  _queuedAdvance: false,
+  _questionToken: 0,
+
+  _clearTimer(name) {
+    if (this[name] === null) return;
+    clearTimeout(this[name]);
+    this[name] = null;
+  },
+
+  _clearQuestionTimers() {
+    this._clearTimer('_ttsTimer');
+    this._clearTimer('_retryTimer');
+    this._clearTimer('_answerTimer');
+    this._clearTimer('_resultTimer');
+    TTS.cancelPending();
+  },
+
+  _detachGhostHandlers(ghost) {
+    if (!ghost) return;
+    [
+      ['beforeinput', '_beforeInputH'],
+      ['input', '_inputH'],
+      ['keydown', '_keydownH'],
+      ['compositionstart', '_compositionStartH'],
+      ['compositionend', '_compositionEndH']
+    ].forEach(([type, key]) => {
+      if (ghost[key]) ghost.removeEventListener(type, ghost[key]);
+      ghost[key] = null;
+    });
+    if (this._enterNextH) {
+      ghost.removeEventListener('keydown', this._enterNextH);
+      this._enterNextH = null;
+    }
+  },
+
+  _focusGhost() {
+    const ghost = this._ghost;
+    if (!ghost?.isConnected || document.activeElement === ghost) return;
+    try { ghost.focus({ preventScroll: true }); }
+    catch { ghost.focus(); }
+  },
+
+  _recordWrong(word) {
+    if (word?.id !== undefined && word?.id !== null) this._pendingWrongIds.add(String(word.id));
+  },
+
+  _flushWrongCounts() {
+    if (!this._pendingWrongIds.size) return;
+    DB.incrementWrongCounts([...this._pendingWrongIds]);
+    this._pendingWrongIds.clear();
+  },
+
+  _persistPendingSession() {
+    if (this._sessionSaveTimer !== null) {
+      clearTimeout(this._sessionSaveTimer);
+      this._sessionSaveTimer = null;
+    }
+    const save = this._pendingSessionSave;
+    this._pendingSessionSave = null;
+    if (save) save();
+  },
+
+  cleanupQuiz() {
+    const ghost = this._ghost || document.getElementById('quiz-ghost-input');
+    const hadActiveQuiz = !!ghost || this.state.phase === 'quiz';
+    this._questionToken++;
+    this._persistPendingSession();
+    this._clearQuestionTimers();
+    this._flushWrongCounts();
+    this._detachGhostHandlers(ghost);
+    if (ghost) {
+      ghost.style.pointerEvents = 'none';
+      ghost.blur();
+      ghost.remove();
+    }
+    this._ghost = null;
+    this._canQueueAdvance = false;
+    this._queuedAdvance = false;
+    if (hadActiveQuiz) TTS.stop();
+    Router.quizActive = false;
+    resumeAppUpdateWhenSafe();
+  },
+
+  render(container) {
+    this.cleanupQuiz();
+    this.state.phase = 'setup';
+    this.renderSetup(container);
+    setTimeout(resumeAppUpdateWhenSafe, 0);
+  },
   renderSetup(container) {
     Router.quizActive = false;
     const totalWords = DB.getWords().length;
@@ -2257,6 +2406,8 @@ Views.practice = {
       const selected = selectWords(state.selectedCount, state.selectedMode, DB.getBoostedWords());
       if (!selected.length) { showToast('沒有可練習的單字'); return; }
       state.words = selected; state.currentIdx = 0; state.wrongWords = []; state.phase = 'quiz';
+      state.showAnswer = false; state.waitingRetype = false;
+      this._pendingWrongIds.clear();
       Router.quizActive = true; this.initQuizShell(container);
       // Pre-warm speech synthesis so first word has voices ready
       if (window.speechSynthesis) { window.speechSynthesis.getVoices(); }
@@ -2267,7 +2418,7 @@ Views.practice = {
     container.innerHTML = `
       <div class="progress-bar-wrap" id="quiz-progress-wrap">
         <div class="progress-label"><span id="progress-text">進度 1 / ${this.state.words.length}</span><span id="progress-pct">0%</span></div>
-        <div class="progress-bar"><div class="progress-fill" id="progress-fill" style="width:0%"></div></div>
+        <div class="progress-bar"><div class="progress-fill" id="progress-fill" style="transform:scaleX(0)"></div></div>
       </div>
       <div class="quiz-area">
         <div class="quiz-word-info" id="quiz-word-info"></div>
@@ -2296,9 +2447,12 @@ Views.practice = {
       ghost.setAttribute('name', 'quiz-' + Date.now()); // unique name prevents browser autocomplete
       document.getElementById('app').appendChild(ghost);
     }
+    ghost.readOnly = false;
     this._ghost = ghost; return ghost;
   },
   renderQuiz(container) {
+    this._clearQuestionTimers();
+    const questionToken = ++this._questionToken;
     const state = this.state; const word = state.words[state.currentIdx];
     const total = state.words.length; const current = state.currentIdx + 1;
     const progress = Math.round((state.currentIdx / total) * 100);
@@ -2308,7 +2462,7 @@ Views.practice = {
     const progressFill = document.getElementById('progress-fill');
     if (progressText) progressText.textContent = `進度 ${current} / ${total}`;
     if (progressPct) progressPct.textContent = `${progress}%`;
-    if (progressFill) progressFill.style.width = `${progress}%`;
+    if (progressFill) progressFill.style.transform = `scaleX(${progress / 100})`;
     const wordInfo = document.getElementById('quiz-word-info');
     if (wordInfo) {
       const ttsOn = TTS.enabled;
@@ -2324,6 +2478,8 @@ Views.practice = {
         <div class="quiz-hint">${word.english.replace(/[^a-zA-Z]/g,'').length} 個字母</div>
       `;
       document.getElementById('tts-replay-btn')?.addEventListener('click', () => {
+        this._clearTimer('_ttsTimer');
+        TTS.cancelPending();
         if (TTS.enabled) {
           TTS.speakWhenReady(word.english, 0.75);
         } else {
@@ -2336,10 +2492,14 @@ Views.practice = {
     if (actionsEl) actionsEl.innerHTML = `<button class="btn-secondary" id="show-answer-btn">顯示答案</button>`;
     this.buildLetterBoxes(word, container);
     document.getElementById('show-answer-btn')?.addEventListener('click', () => this.showAnswer(word, container));
-    // Speak the word aloud when it appears (slight delay so keyboard doesn't interrupt)
-    // Delay TTS: 600ms for first word (voices may still be loading), 300ms for subsequent
+    // Track the timer so an old question can never begin speaking during a new one.
+    // The first valid keystroke also cancels a delayed cue; the replay button remains available.
     const ttsDelay = DB.getTtsDelay();
-    setTimeout(() => TTS.speakWhenReady(word.english, 0.82), ttsDelay);
+    this._ttsTimer = setTimeout(() => {
+      this._ttsTimer = null;
+      if (questionToken !== this._questionToken || state.words[state.currentIdx] !== word) return;
+      TTS.speakWhenReady(word.english, 0.82);
+    }, ttsDelay);
   },
   buildLetterBoxes(word, container) {
     const wrap = document.getElementById('letter-wrap');
@@ -2388,11 +2548,9 @@ Views.practice = {
     wrap.replaceChildren(fragment);
 
     // Remove handlers from the previous question/retry before binding the new ones.
-    if (ghost._beforeInputH)    ghost.removeEventListener('beforeinput', ghost._beforeInputH);
-    if (ghost._inputH)          ghost.removeEventListener('input', ghost._inputH);
-    if (ghost._keydownH)        ghost.removeEventListener('keydown', ghost._keydownH);
-    if (ghost._compositionStartH) ghost.removeEventListener('compositionstart', ghost._compositionStartH);
-    if (ghost._compositionEndH) ghost.removeEventListener('compositionend', ghost._compositionEndH);
+    this._detachGhostHandlers(ghost);
+    this._canQueueAdvance = false;
+    this._queuedAdvance = false;
 
     let userInput = '';
     let renderedInput = null;
@@ -2405,7 +2563,6 @@ Views.practice = {
 
     ghost.value = '';
     ghost.maxLength = maxLen;
-    ghost.readOnly = false;
 
     const writeBox = (index, state, text) => {
       if (index < 0 || index >= allBoxDivs.length) return;
@@ -2464,14 +2621,15 @@ Views.practice = {
       updateDefaultVisual();
     };
 
-    const normalizeInput = value => (value || '').replace(/[^a-zA-Z]/g, '').toLowerCase().slice(0, maxLen);
+    const sanitizeInput = value => String(value || '').replace(/[^a-zA-Z]/g, '').slice(0, maxLen);
+    const normalizeInput = value => sanitizeInput(value).toLowerCase();
 
     const evaluate = () => {
       if (userInput.length < maxLen || evaluating) return;
       evaluating = true;
-      ghost.readOnly = true;
       const snapshot = userInput;
       if (this.state.showAnswer) return;
+      this._canQueueAdvance = snapshot === correctStr;
       // Run answer evaluation inside the native input event. This preserves the
       // iOS user-activation token so AudioContext.resume() and the cue can start
       // immediately after the final character, without adding input latency.
@@ -2482,19 +2640,30 @@ Views.practice = {
       }
     };
 
-    const applyNativeValue = () => {
-      if (this.state.showAnswer || composing || evaluating) return;
+    const applyNativeValue = event => {
+      if (this.state.showAnswer || evaluating) return;
       const raw = ghost.value;
-      const next = normalizeInput(raw);
-      // Normal English typing takes this zero-write path. Only invalid/overflow text
-      // is written back, avoiding iOS keyboard re-synchronisation on every keystroke.
-      if (raw !== next) {
-        ghost.value = next;
-        try { ghost.setSelectionRange(next.length, next.length); } catch {}
+      const sanitized = sanitizeInput(raw);
+      const next = normalizeInput(sanitized);
+      const isComposing = composing || !!event?.isComposing;
+
+      // Preserve the keyboard's native casing. Write back only when characters were
+      // actually removed, so auto-capitalisation cannot force an iOS text resync.
+      if (!isComposing && raw !== sanitized) {
+        ghost.value = sanitized;
+        try { ghost.setSelectionRange(sanitized.length, sanitized.length); } catch {}
       }
-      if (next === userInput) return;
-      userInput = next;
-      updateDefaultVisual();
+
+      const isFirstValidInput = userInput.length === 0 && next.length > 0;
+      if (next !== userInput) {
+        userInput = next;
+        updateDefaultVisual();
+      }
+      if (isFirstValidInput) {
+        this._clearTimer('_ttsTimer');
+        TTS.cancelPending();
+      }
+      if (isComposing) return;
       evaluate();
     };
 
@@ -2503,11 +2672,17 @@ Views.practice = {
     ghost._beforeInputH = event => {
       if (this.state.showAnswer || evaluating) event.preventDefault();
     };
-    ghost._inputH = applyNativeValue;
+    ghost._inputH = event => applyNativeValue(event);
     ghost._compositionStartH = () => { composing = true; };
-    ghost._compositionEndH = () => { composing = false; applyNativeValue(); };
+    ghost._compositionEndH = event => { composing = false; applyNativeValue(event); };
     ghost._keydownH = event => {
-      if (event.key === 'Enter' && userInput.length < maxLen) event.preventDefault();
+      if (event.key !== 'Enter' || event.isComposing || event.keyCode === 229) return;
+      if (userInput.length < maxLen) {
+        event.preventDefault();
+      } else if (evaluating && this._canQueueAdvance) {
+        event.preventDefault();
+        this._queuedAdvance = true;
+      }
     };
 
     ghost.addEventListener('beforeinput', ghost._beforeInputH, { passive: false });
@@ -2520,13 +2695,13 @@ Views.practice = {
     wrap.style.cursor = 'text';
     wrap.onclick = event => {
       event.stopPropagation();
-      ghost.focus({ preventScroll: true });
+      this._focusGhost();
     };
     const quizArea = document.querySelector('.quiz-area');
-    if (quizArea) quizArea.onclick = () => ghost.focus({ preventScroll: true });
+    if (quizArea) quizArea.onclick = () => this._focusGhost();
 
     void Sound.unlock();
-    ghost.focus({ preventScroll: true });
+    this._focusGhost();
     updateDefaultVisual();
   },
   // Canonical answer normaliser — strips everything except a-z, lowercases
@@ -2536,18 +2711,31 @@ Views.practice = {
     // Always recompute from the word itself — guards against any stale closure value
     const canonical = this._norm(word.english);
     const isCorrect = this._norm(typed) === canonical;
+    const questionToken = this._questionToken;
+    const isCurrentQuestion = () => questionToken === this._questionToken && this.state.words[this.state.currentIdx] === word;
 
     if (isCorrect) {
-      void Sound.playCorrect(); updateVisual('correct');
-      // Brief pause so the green animation is visible, then show the Next button
-      requestAnimationFrame(() => requestAnimationFrame(() => this.showNextBtn(word, container)));
+      // Start audio within the native input event, then move full-word colouring to
+      // the next frame so the final typed letter is never delayed.
+      void Sound.playCorrect();
+      requestAnimationFrame(() => {
+        if (!isCurrentQuestion()) return;
+        updateVisual('correct');
+        requestAnimationFrame(() => {
+          if (isCurrentQuestion()) this.showNextBtn(word, container);
+        });
+      });
     } else {
-      void Sound.playWrong(); updateVisual('wrong');
+      void Sound.playWrong();
+      requestAnimationFrame(() => { if (isCurrentQuestion()) updateVisual('wrong'); });
       if (!this.state.wrongWords.find(w => w.id === word.id)) {
         this.state.wrongWords.push(word);
-        setTimeout(() => DB.updateWord(word.id, { wrongCount: (word.wrongCount||0)+1 }), 50);
+        this._recordWrong(word);
       }
-      setTimeout(() => {
+      this._clearTimer('_retryTimer');
+      this._retryTimer = setTimeout(() => {
+        this._retryTimer = null;
+        if (!isCurrentQuestion()) return;
         this.buildLetterBoxes(word, container);
         if (!document.getElementById('show-answer-btn')) {
           const actionsEl = document.getElementById('quiz-actions');
@@ -2558,60 +2746,107 @@ Views.practice = {
   },
   _checkRetype(word, typed, allBoxDivs, container, updateVisual, correctStr) {
     const isCorrect = this._norm(typed) === this._norm(word.english);
+    const questionToken = this._questionToken;
+    const isCurrentQuestion = () => questionToken === this._questionToken && this.state.words[this.state.currentIdx] === word;
     if (isCorrect) {
-      void Sound.playCorrect(); updateVisual('correct');
+      void Sound.playCorrect();
       this.state.waitingRetype = false;
-      requestAnimationFrame(() => requestAnimationFrame(() => this.showNextBtn(word, container)));
+      requestAnimationFrame(() => {
+        if (!isCurrentQuestion()) return;
+        updateVisual('correct');
+        requestAnimationFrame(() => {
+          if (isCurrentQuestion()) this.showNextBtn(word, container);
+        });
+      });
     } else {
-      void Sound.playWrong(); updateVisual('wrong');
-      setTimeout(() => { this.buildLetterBoxes(word, container); }, 800);
+      void Sound.playWrong();
+      requestAnimationFrame(() => { if (isCurrentQuestion()) updateVisual('wrong'); });
+      this._clearTimer('_retryTimer');
+      this._retryTimer = setTimeout(() => {
+        this._retryTimer = null;
+        if (isCurrentQuestion()) this.buildLetterBoxes(word, container);
+      }, 800);
     }
   },
   showAnswer(word, container) {
+    this._clearQuestionTimers();
+    // Invalidate any answer-colouring rAF queued by the final input event.
+    const questionToken = ++this._questionToken;
     const state = this.state; state.showAnswer = true;
     // Count as wrong silently
     if (!state.wrongWords.find(w => w.id === word.id)) {
       state.wrongWords.push(word);
-      DB.updateWord(word.id, { wrongCount: (word.wrongCount||0)+1 });
+      this._recordWrong(word);
     }
     const correctStr = this._norm(word.english);
     const actionsEl  = document.getElementById('quiz-actions');
     const boxes      = document.querySelectorAll('.letter-box-vis');
     // Flash correct letters in red
     boxes.forEach((box,i) => { box.className='letter-box-vis wrong'; box.textContent=correctStr[i]||''; });
+    if (!actionsEl) return;
     actionsEl.innerHTML = `<div class="answer-reveal answer-reveal-wrong"><div class="revealed-word revealed-word-wrong">${word.english.toLowerCase()}</div><div class="reveal-hint">請重新輸入一次正確拼字</div></div>`;
-    // showAnswer=false BEFORE the timeout so beforeinput is live again
-    state.showAnswer = false;
     state.waitingRetype = true;
-    if (this._ghost) { this._ghost.style.pointerEvents = 'auto'; this._ghost.focus(); }
-    setTimeout(() => { this.buildLetterBoxes(word, container); }, 80);
+    // Keep input locked until rebuilding finishes. This removes the old 80 ms
+    // window where fast retyping was accepted and then silently erased.
+    this._answerTimer = setTimeout(() => {
+      this._answerTimer = null;
+      if (questionToken !== this._questionToken || state.words[state.currentIdx] !== word) return;
+      state.showAnswer = false;
+      this.buildLetterBoxes(word, container);
+    }, 80);
   },
   showNextBtn(word, container) {
     const actionsEl = document.getElementById('quiz-actions');
+    if (!actionsEl || this.state.words[this.state.currentIdx] !== word) return;
+    if (this._ghost && this._enterNextH) {
+      this._ghost.removeEventListener('keydown', this._enterNextH);
+      this._enterNextH = null;
+    }
     const isLast = this.state.currentIdx + 1 >= this.state.words.length;
     actionsEl.innerHTML = `<div class="correct-answer-row">${word.english.toLowerCase()}</div><button class="btn-primary" id="next-btn">${isLast ? '查看結果 →' : '下一題 → (Enter)'}</button>`;
+    let advanced = false;
     const doNext = () => {
-      if (this._ghost) this._ghost.removeEventListener('keydown', this._enterNextH);
+      if (advanced) return;
+      advanced = true;
+      this._clearQuestionTimers();
+      if (this._ghost && this._enterNextH) this._ghost.removeEventListener('keydown', this._enterNextH);
+      this._enterNextH = null;
       this.state.currentIdx++;
       if (this.state.currentIdx >= this.state.words.length) {
         Router.quizActive = false;
         const ghost = document.getElementById('quiz-ghost-input');
-        if (ghost) { ghost.style.pointerEvents='none'; ghost.blur(); ghost.remove(); this._ghost=null; }
+        this._detachGhostHandlers(ghost);
+        if (ghost) { ghost.style.pointerEvents='none'; ghost.blur(); ghost.remove(); }
+        this._ghost = null;
         this.renderResult(container);
       } else {
         this.renderQuiz(container);
-        if (this._ghost) { this._ghost.value=''; this._ghost.focus(); }
       }
     };
-    document.getElementById('next-btn').addEventListener('click', doNext);
+    const advanceWasQueued = this._queuedAdvance;
+    this._queuedAdvance = false;
+    this._canQueueAdvance = false;
+    if (advanceWasQueued) {
+      doNext();
+      return;
+    }
+    document.getElementById('next-btn')?.addEventListener('click', doNext);
     this._enterNextH = (e) => { if (e.key==='Enter') { e.preventDefault(); doNext(); } };
-    if (this._ghost) { this._ghost.addEventListener('keydown', this._enterNextH); this._ghost.focus(); }
+    if (this._ghost) {
+      this._ghost.addEventListener('keydown', this._enterNextH);
+      this._focusGhost();
+    }
   },
   renderResult(container) {
     const state = this.state; const total = state.words.length; const wrongCount = state.wrongWords.length;
     const correctCount = total - wrongCount; const pct = total > 0 ? Math.round((correctCount/total)*100) : 0;
-    DB.addPracticeSession(todayStr(), total, state.wrongWords.map(w=>({english:w.english,partOfSpeech:w.partOfSpeech,chinese:w.chinese})));
-    setTimeout(() => { void Sound.playResult(pct); }, 150);
+    state.phase = 'result';
+    this._flushWrongCounts();
+    const sessionDetails = state.wrongWords.map(w=>({english:w.english,partOfSpeech:w.partOfSpeech,chinese:w.chinese}));
+    this._resultTimer = setTimeout(() => {
+      this._resultTimer = null;
+      void Sound.playResult(pct);
+    }, 150);
     container.innerHTML = `
       <div class="result-view">
         <div class="result-score">
@@ -2632,13 +2867,19 @@ Views.practice = {
         <button class="btn-secondary" id="retry-btn">重新練習</button>
       </div>
     `;
+    this._pendingSessionSave = () => DB.addPracticeSession(todayStr(), total, sessionDetails);
+    this._sessionSaveTimer = setTimeout(() => this._persistPendingSession(), 0);
     container.querySelectorAll('[data-boost]').forEach(btn => btn.addEventListener('click', () => {
       const id = btn.dataset.boost; const isBoosted = DB.toggleBoost(id);
       btn.textContent = isBoosted?'✓ 已加強練習':'⚡ 加入加強練習'; btn.classList.toggle('boosted', isBoosted);
       showToast(isBoosted?'已加入加強練習清單':'已移除加強練習');
     }));
     document.getElementById('back-home-btn').addEventListener('click', () => Router.navigate('home'));
-    document.getElementById('retry-btn').addEventListener('click', () => { state.phase='setup'; this.renderSetup(container); });
+    document.getElementById('retry-btn').addEventListener('click', () => {
+      this.cleanupQuiz();
+      state.phase='setup';
+      this.renderSetup(container);
+    });
   }
 };
 
@@ -5802,20 +6043,31 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   Router._doNavigate('home');
 
-  // Automatically check and apply new versions without requiring a settings-page visit.
-  setTimeout(async () => {
+  // Check during idle time and never install/reload while an exercise is active.
+  const checkForStartupUpdate = async () => {
+    if (Router.quizActive || Router.essayActive) return;
     try {
       const result = await AppUpdater.check({ autoApply: false });
       if (result.hasUpdate) {
+        if (Router.quizActive || Router.essayActive) {
+          showToast('已發現新版本，將於下次開啟時更新', 2800);
+          return;
+        }
         showToast('發現新版本 ' + result.remoteDisplay + '，正在自動更新…', 3200);
         await AppUpdater.applyUpdate();
       }
     } catch (error) {
       console.info('[VersionManager] Startup update check skipped:', error.message);
     }
-  }, 700);
+  };
+  if ('requestIdleCallback' in window) requestIdleCallback(checkForStartupUpdate, { timeout: 4000 });
+  else setTimeout(checkForStartupUpdate, 1500);
 
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'hidden') AppStorage.flush();
+    if (document.visibilityState === 'hidden') {
+      Views.practice?._persistPendingSession?.();
+      Views.practice?._flushWrongCounts?.();
+      AppStorage.flush();
+    }
   });
 });

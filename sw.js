@@ -1,23 +1,27 @@
 const CACHE_PREFIX = 'Voc-PWA-';
-const CACHE_NAME = 'Voc-PWA-V7_0_3';
+const CACHE_NAME = 'Voc-PWA-V7_0_4';
 const APP_SHELL = [
   './',
   './index.html',
-  './style.css?v=V7_0_3',
-  './app.js?v=V7_0_3',
-  './manifest.json?v=V7_0_3',
+  './style.css?v=V7_0_4',
+  './app.js?v=V7_0_4',
+  './manifest.json?v=V7_0_4',
   './version.json',
-  './storage.js',
-  './backup-schema.js',
-  './version-manager.js',
-  './chart-renderer.js',
+  './storage.js?v=V7_0_4',
+  './backup-schema.js?v=V7_0_4',
+  './version-manager.js?v=V7_0_4',
+  './chart-renderer.js?v=V7_0_4',
   './jszip.min.js?v=3_10_1',
   './icon-192.png',
   './icon-512.png'
 ];
 
 self.addEventListener('install', event => {
-  event.waitUntil(caches.open(CACHE_NAME).then(cache => cache.addAll(APP_SHELL)));
+  event.waitUntil((async () => {
+    const cache = await caches.open(CACHE_NAME);
+    const freshRequests = APP_SHELL.map(url => new Request(new URL(url, self.location.href), { cache: 'reload' }));
+    await cache.addAll(freshRequests);
+  })());
 });
 
 self.addEventListener('message', event => {
@@ -39,24 +43,24 @@ self.addEventListener('activate', event => {
 });
 
 async function networkFirst(request, fallbackUrl) {
+  const cache = await caches.open(CACHE_NAME);
   try {
-    const response = await fetch(request);
+    const response = await fetch(new Request(request, { cache: 'no-store' }));
     if (response?.ok) {
-      const cache = await caches.open(CACHE_NAME);
       cache.put(request, response.clone()).catch(() => {});
     }
     return response;
   } catch {
-    return (await caches.match(request)) || (fallbackUrl ? await caches.match(fallbackUrl) : Response.error());
+    return (await cache.match(request)) || (fallbackUrl ? await cache.match(fallbackUrl) : Response.error());
   }
 }
 
 async function cacheFirst(request) {
-  const cached = await caches.match(request);
+  const cache = await caches.open(CACHE_NAME);
+  const cached = await cache.match(request);
   if (cached) return cached;
-  const response = await fetch(request);
+  const response = await fetch(new Request(request, { cache: 'no-store' }));
   if (response?.ok) {
-    const cache = await caches.open(CACHE_NAME);
     cache.put(request, response.clone()).catch(() => {});
   }
   return response;
@@ -68,7 +72,10 @@ self.addEventListener('fetch', event => {
   if (url.origin !== self.location.origin) return;
 
   if (url.pathname.endsWith('/version.json')) {
-    event.respondWith(fetch(event.request, { cache: 'no-store' }));
+    event.respondWith(fetch(event.request, { cache: 'no-store' }).catch(async () => {
+      const cache = await caches.open(CACHE_NAME);
+      return (await cache.match(new URL('./version.json', self.location.href).href)) || Response.error();
+    }));
     return;
   }
 

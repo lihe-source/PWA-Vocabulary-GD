@@ -14,25 +14,75 @@ function compareVersions(a, b) {
 }
 
 export class VersionManager {
-  constructor({ currentVersion, displayVersion, cachePrefix = 'Voc-PWA-', versionUrl = './version.json', storage }) {
+  constructor({ currentVersion, displayVersion, cachePrefix = 'Voc-PWA-', versionUrl = './version.json', storage, canActivate = () => true }) {
     this.currentVersion = currentVersion;
     this.displayVersion = displayVersion;
     this.cachePrefix = cachePrefix;
     this.versionUrl = versionUrl;
     this.storage = storage;
+    this.canActivate = canActivate;
     this.registration = null;
     this.reloadTriggered = false;
+    this.reloadPending = false;
+    this._controllerChangeHandler = null;
+    this._watchedRegistration = null;
+    this._watchedWorkers = new WeakSet();
+  }
+
+  _isSafeToActivate() {
+    try { return this.canActivate() !== false; }
+    catch { return false; }
+  }
+
+  async _flushStorage() {
+    try { await this.storage?.flush?.(); }
+    catch {}
+  }
+
+  _watchInstalling(worker) {
+    if (!worker || this._watchedWorkers.has(worker)) return;
+    this._watchedWorkers.add(worker);
+    worker.addEventListener('statechange', () => {
+      if (worker.state === 'installed') void this.activateWaitingIfSafe(this.registration?.waiting || worker);
+    });
+  }
+
+  async activateWaitingIfSafe(worker = this.registration?.waiting) {
+    if (!worker || !this._isSafeToActivate()) return false;
+    await this._flushStorage();
+    if (!this._isSafeToActivate()) return false;
+    worker.postMessage({ type: 'SKIP_WAITING' });
+    return true;
+  }
+
+  async reloadIfSafe() {
+    if (!this.reloadPending || this.reloadTriggered || !this._isSafeToActivate()) return false;
+    await this._flushStorage();
+    if (!this._isSafeToActivate()) return false;
+    this.reloadPending = false;
+    this.reloadTriggered = true;
+    location.reload();
+    return true;
   }
 
   async register() {
     if (!('serviceWorker' in navigator)) return null;
     try {
       this.registration = await navigator.serviceWorker.register('./sw.js', { updateViaCache: 'none' });
-      navigator.serviceWorker.addEventListener('controllerchange', () => {
-        if (this.reloadTriggered) return;
-        this.reloadTriggered = true;
-        location.reload();
-      });
+      if (!this._controllerChangeHandler) {
+        this._controllerChangeHandler = () => {
+          if (this.reloadTriggered) return;
+          this.reloadPending = true;
+          void this.reloadIfSafe();
+        };
+        navigator.serviceWorker.addEventListener('controllerchange', this._controllerChangeHandler);
+      }
+      if (this._watchedRegistration !== this.registration) {
+        this._watchedRegistration = this.registration;
+        this.registration.addEventListener('updatefound', () => this._watchInstalling(this.registration?.installing));
+      }
+      this._watchInstalling(this.registration.installing);
+      await this.activateWaitingIfSafe();
       return this.registration;
     } catch (error) {
       console.warn('[VersionManager] Service worker registration failed.', error);
@@ -67,35 +117,49 @@ export class VersionManager {
 
   async applyUpdate() {
     if (!('serviceWorker' in navigator)) {
+      if (!this._isSafeToActivate()) return false;
+      await this._flushStorage();
+      if (!this._isSafeToActivate()) return false;
       await this.clearAppCaches();
+      if (!this._isSafeToActivate()) return false;
       location.reload();
-      return;
+      return true;
     }
     const reg = this.registration || await navigator.serviceWorker.getRegistration('./') || await this.register();
     if (!reg) {
+      if (!this._isSafeToActivate()) return false;
+      await this._flushStorage();
+      if (!this._isSafeToActivate()) return false;
       await this.clearAppCaches();
+      if (!this._isSafeToActivate()) return false;
       location.reload();
-      return;
-    }
-
-    await reg.update().catch(() => {});
-    const activate = worker => {
-      if (!worker) return false;
-      worker.postMessage({ type: 'SKIP_WAITING' });
       return true;
-    };
-
-    if (activate(reg.waiting)) return;
-    if (reg.installing) {
-      const installing = reg.installing;
-      installing.addEventListener('statechange', () => {
-        if (installing.state === 'installed') activate(reg.waiting || installing);
-      });
-      return;
     }
 
+    try {
+      await reg.update();
+    } catch {
+      // Keep the current offline-capable cache intact when the update network
+      // request fails. A later startup check can retry safely.
+      return false;
+    }
+    if (await this.activateWaitingIfSafe(reg.waiting)) return true;
+    if (reg.installing) {
+      this._watchInstalling(reg.installing);
+      return false;
+    }
+
+    // A healthy active worker with no waiting/installing replacement means no
+    // atomic update is ready. Do not delete the shell it currently serves.
+    if (reg.active) return false;
+
+    if (!this._isSafeToActivate()) return false;
+    await this._flushStorage();
+    if (!this._isSafeToActivate()) return false;
     await this.clearAppCaches();
+    if (!this._isSafeToActivate()) return false;
     location.reload();
+    return true;
   }
 
   async clearAppCaches() {
