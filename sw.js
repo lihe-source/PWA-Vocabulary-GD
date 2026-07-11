@@ -1,11 +1,11 @@
 const CACHE_PREFIX = 'Voc-PWA-';
-const CACHE_NAME = 'Voc-PWA-V7_0_2';
+const CACHE_NAME = 'Voc-PWA-V7_0_3';
 const APP_SHELL = [
   './',
   './index.html',
-  './style.css?v=V7_0_2',
-  './app.js?v=V7_0_2',
-  './manifest.json?v=V7_0_2',
+  './style.css?v=V7_0_3',
+  './app.js?v=V7_0_3',
+  './manifest.json?v=V7_0_3',
   './version.json',
   './storage.js',
   './backup-schema.js',

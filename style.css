@@ -2616,3 +2616,55 @@ html.is-offline #app { padding-top: calc(env(safe-area-inset-top, 0px) + 30px); 
 .local-recovery-item strong, .local-recovery-item span { display: block; }
 .local-recovery-item strong { font-size: 13px; margin-bottom: 4px; }
 .local-recovery-item span { color: var(--text-muted); font-size: 11px; line-height: 1.5; }
+
+/* ===== V7.0.3 Sound test ===== */
+.sound-test-card {
+  display: grid;
+  gap: 12px;
+}
+.sound-test-status {
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--surface) 88%, var(--text-muted) 12%);
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+.sound-test-status.is-running {
+  border-color: color-mix(in srgb, #22a06b 55%, var(--border));
+  background: color-mix(in srgb, #22a06b 10%, var(--surface));
+  color: #168557;
+}
+.sound-test-status.has-error {
+  border-color: color-mix(in srgb, #d34a4a 55%, var(--border));
+  background: color-mix(in srgb, #d34a4a 9%, var(--surface));
+  color: #b63d3d;
+}
+.sound-test-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 8px;
+}
+.sound-test-btn {
+  width: 100%;
+  min-height: 46px;
+  margin: 0;
+  padding: 10px 8px;
+  font-size: 13px;
+  touch-action: manipulation;
+}
+.sound-test-wide {
+  grid-column: 1 / -1;
+}
+.sound-test-tip {
+  margin: 0;
+}
+@media (max-width: 340px) {
+  .sound-test-grid { grid-template-columns: 1fr; }
+  .sound-test-wide { grid-column: auto; }
+}

@@ -4,13 +4,13 @@ import { VersionManager } from './version-manager.js';
 import { TrendChart } from './chart-renderer.js';
 
 // ===========================
-// 英文單字複習 PWA - app.js V7_0_2
+// 英文單字複習 PWA - app.js V7_0_3
 // V7：IndexedDB 資料層、備份驗證、OAuth Token 安全化、自動更新
 // ===========================
 
-const APP_VERSION = 'V7_0_2';
-const APP_DISPLAY_VERSION = 'V7.0.2';
-const APP_CACHE_VERSION = 'Voc-PWA-V7_0_2';
+const APP_VERSION = 'V7_0_3';
+const APP_DISPLAY_VERSION = 'V7.0.3';
+const APP_CACHE_VERSION = 'Voc-PWA-V7_0_3';
 const AppUpdater = new VersionManager({
   currentVersion: APP_VERSION,
   displayVersion: APP_DISPLAY_VERSION,
@@ -24,109 +24,191 @@ const AppUpdater = new VersionManager({
 // context, explicitly unlock it from user gestures, and resume it before every cue.
 const Sound = {
   ctx: null,
-  master: null,
-  unlocked: false,
-  unlockPromise: null,
+  lastError: '',
+  lastPlayed: '',
+  lastPlayedAt: '',
 
-  _createContext() {
+  _getCtx() {
     const AudioContextClass = window.AudioContext || window.webkitAudioContext;
-    if (!AudioContextClass) return null;
+    if (!AudioContextClass) {
+      this.lastError = '此瀏覽器不支援 Web Audio API';
+      return null;
+    }
     if (!this.ctx || this.ctx.state === 'closed') {
-      try {
-        this.ctx = new AudioContextClass({ latencyHint: 'interactive' });
-      } catch {
-        this.ctx = new AudioContextClass();
-      }
-      this.master = this.ctx.createGain();
-      this.master.gain.value = 0.9;
-      this.master.connect(this.ctx.destination);
-      this.unlocked = false;
+      // Use the same simple AudioContext construction as V6.6. On iOS standalone
+      // PWAs this is more reliable than using latencyHint plus an extra master node.
+      this.ctx = new AudioContextClass();
+      this.ctx.onstatechange = () => this._emitStatus();
+      this.lastError = '';
     }
     return this.ctx;
   },
 
-  // Must be called from a click/tap/key action at least once on iOS.
-  unlock() {
-    const ctx = this._createContext();
-    if (!ctx) return Promise.resolve(false);
-    if (this.unlockPromise) return this.unlockPromise;
-
-    // Starting a silent buffer synchronously is more reliable than resume() alone
-    // in standalone Safari/PWA mode.
-    if (!this.unlocked) {
-      try {
-        const silent = ctx.createBufferSource();
-        silent.buffer = ctx.createBuffer(1, 1, Math.max(8000, ctx.sampleRate || 44100));
-        silent.connect(this.master);
-        silent.start(0);
-        this.unlocked = true;
-      } catch {}
-    }
-
-    this.unlockPromise = (async () => {
-      try {
-        if (ctx.state !== 'running') await ctx.resume();
-        return ctx.state === 'running';
-      } catch {
-        return false;
-      } finally {
-        this.unlockPromise = null;
-      }
-    })();
-    return this.unlockPromise;
-  },
-
-  async _withCtx(fn) {
+  _emitStatus() {
     try {
-      const ready = await this.unlock();
-      if (!ready || !this.ctx || !this.master) return;
-      fn(this.ctx, this.master);
+      window.dispatchEvent(new CustomEvent('quiz-sound-state', { detail: this.getStatus() }));
     } catch {}
   },
 
-  _tone(ctx, destination, { frequency, start = 0, duration = 0.25, gain = 0.28, type = 'sine', endFrequency = null }) {
-    const now = ctx.currentTime + 0.008;
-    const osc = ctx.createOscillator();
-    const amp = ctx.createGain();
-    osc.type = type;
-    osc.frequency.setValueAtTime(frequency, now + start);
-    if (endFrequency !== null) osc.frequency.linearRampToValueAtTime(endFrequency, now + start + duration);
-    amp.gain.setValueAtTime(0.0001, now + start);
-    amp.gain.exponentialRampToValueAtTime(Math.max(0.0002, gain), now + start + 0.018);
-    amp.gain.exponentialRampToValueAtTime(0.0001, now + start + duration);
-    osc.connect(amp);
-    amp.connect(destination);
-    osc.start(now + start);
-    osc.stop(now + start + duration + 0.025);
+  getStatus() {
+    const supported = !!(window.AudioContext || window.webkitAudioContext);
+    const state = this.ctx?.state || (supported ? 'not-created' : 'unsupported');
+    return {
+      supported,
+      state,
+      lastError: this.lastError,
+      lastPlayed: this.lastPlayed,
+      lastPlayedAt: this.lastPlayedAt
+    };
+  },
+
+  // Call from a direct tap/click/key action. The silent oscillator primes the
+  // audio route without relying on speechSynthesis or an asynchronous timer.
+  unlock() {
+    try {
+      const ctx = this._getCtx();
+      if (!ctx) return Promise.resolve(false);
+
+      try {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        gain.gain.setValueAtTime(0.00001, ctx.currentTime);
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.start(ctx.currentTime);
+        osc.stop(ctx.currentTime + 0.015);
+      } catch {}
+
+      if (ctx.state === 'running') {
+        this.lastError = '';
+        this._emitStatus();
+        return Promise.resolve(true);
+      }
+
+      const resumed = ctx.resume();
+      return Promise.resolve(resumed).then(() => {
+        const ready = ctx.state === 'running';
+        this.lastError = ready ? '' : `AudioContext 狀態：${ctx.state}`;
+        this._emitStatus();
+        return ready;
+      }).catch(error => {
+        this.lastError = error?.message || '無法啟用音效';
+        this._emitStatus();
+        return false;
+      });
+    } catch (error) {
+      this.lastError = error?.message || '音效初始化失敗';
+      this._emitStatus();
+      return Promise.resolve(false);
+    }
+  },
+
+  // Keep the V6.6 synchronous fast path. When the context is already running,
+  // the oscillator is scheduled immediately inside the user's input event.
+  _withCtx(fn, label) {
+    try {
+      const ctx = this._getCtx();
+      if (!ctx) return Promise.resolve(false);
+
+      const play = () => {
+        try {
+          fn(ctx);
+          this.lastPlayed = label;
+          this.lastPlayedAt = new Date().toISOString();
+          this.lastError = '';
+          this._emitStatus();
+          return true;
+        } catch (error) {
+          this.lastError = error?.message || '音效播放失敗';
+          this._emitStatus();
+          return false;
+        }
+      };
+
+      if (ctx.state === 'running') return Promise.resolve(play());
+
+      // resume() is invoked synchronously from the current user action. Do not
+      // await before calling it, otherwise iOS may discard the activation token.
+      const resumed = ctx.resume();
+      return Promise.resolve(resumed).then(() => {
+        if (ctx.state !== 'running') {
+          this.lastError = `AudioContext 狀態：${ctx.state}`;
+          this._emitStatus();
+          return false;
+        }
+        return play();
+      }).catch(error => {
+        this.lastError = error?.message || '無法恢復音效';
+        this._emitStatus();
+        return false;
+      });
+    } catch (error) {
+      this.lastError = error?.message || '音效播放失敗';
+      this._emitStatus();
+      return Promise.resolve(false);
+    }
   },
 
   playCorrect() {
-    return this._withCtx((ctx, out) => {
-      this._tone(ctx, out, { frequency: 523, start: 0, duration: 0.22, gain: 0.34 });
-      this._tone(ctx, out, { frequency: 659, start: 0.09, duration: 0.23, gain: 0.32 });
-      this._tone(ctx, out, { frequency: 784, start: 0.18, duration: 0.28, gain: 0.30 });
-    });
+    return this._withCtx(ctx => {
+      const o = ctx.createOscillator();
+      const g = ctx.createGain();
+      o.connect(g); g.connect(ctx.destination); o.type = 'sine';
+      o.frequency.setValueAtTime(523, ctx.currentTime);
+      o.frequency.setValueAtTime(659, ctx.currentTime + 0.1);
+      o.frequency.setValueAtTime(784, ctx.currentTime + 0.2);
+      g.gain.setValueAtTime(0.46, ctx.currentTime);
+      g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.5);
+      o.start(ctx.currentTime); o.stop(ctx.currentTime + 0.5);
+    }, '答對音效');
   },
 
   playWrong() {
-    return this._withCtx((ctx, out) => {
-      this._tone(ctx, out, { frequency: 210, endFrequency: 145, duration: 0.34, gain: 0.30, type: 'sawtooth' });
-    });
+    return this._withCtx(ctx => {
+      const o = ctx.createOscillator();
+      const g = ctx.createGain();
+      o.connect(g); g.connect(ctx.destination); o.type = 'sawtooth';
+      o.frequency.setValueAtTime(200, ctx.currentTime);
+      o.frequency.setValueAtTime(150, ctx.currentTime + 0.1);
+      g.gain.setValueAtTime(0.36, ctx.currentTime);
+      g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.32);
+      o.start(ctx.currentTime); o.stop(ctx.currentTime + 0.33);
+    }, '答錯音效');
   },
 
   // pct: 0-100 → tiered result fanfare
   playResult(pct) {
-    return this._withCtx((ctx, out) => {
-      const schedule = (notes, type = 'sine', gain = 0.28, step = 0.11, duration = 0.34) => {
-        notes.forEach((frequency, i) => this._tone(ctx, out, { frequency, start: i * step, duration, gain, type }));
+    return this._withCtx(ctx => {
+      const t = ctx.currentTime;
+      const schedule = (notes, type = 'sine', gain = 0.34, step = 0.11, duration = 0.35) => {
+        notes.forEach((freq, i) => {
+          const o = ctx.createOscillator();
+          const g = ctx.createGain();
+          o.connect(g); g.connect(ctx.destination); o.type = type;
+          o.frequency.value = freq;
+          g.gain.setValueAtTime(0.0001, t + i * step);
+          g.gain.linearRampToValueAtTime(gain, t + i * step + 0.025);
+          g.gain.exponentialRampToValueAtTime(0.001, t + i * step + duration);
+          o.start(t + i * step); o.stop(t + i * step + duration + 0.03);
+        });
       };
-      if (pct === 100) schedule([523, 659, 784, 1047, 1319], 'sine', 0.32, 0.10, 0.38);
-      else if (pct >= 80) schedule([523, 659, 784, 1047], 'sine', 0.30, 0.11, 0.34);
-      else if (pct >= 60) schedule([523, 659, 784], 'sine', 0.28, 0.12, 0.32);
-      else if (pct >= 40) schedule([440, 523], 'triangle', 0.26, 0.15, 0.32);
-      else if (pct >= 20) schedule([392, 330], 'triangle', 0.25, 0.18, 0.36);
-      else this._tone(ctx, out, { frequency: 280, endFrequency: 175, duration: 0.52, gain: 0.28, type: 'sawtooth' });
-    });
+
+      if (pct === 100) schedule([523, 659, 784, 1047, 1319], 'sine', 0.38, 0.10, 0.40);
+      else if (pct >= 80) schedule([523, 659, 784, 1047], 'sine', 0.36, 0.11, 0.36);
+      else if (pct >= 60) schedule([523, 659, 784], 'sine', 0.34, 0.12, 0.34);
+      else if (pct >= 40) schedule([440, 523], 'triangle', 0.32, 0.15, 0.34);
+      else if (pct >= 20) schedule([392, 330], 'triangle', 0.30, 0.18, 0.38);
+      else {
+        const o = ctx.createOscillator();
+        const g = ctx.createGain();
+        o.connect(g); g.connect(ctx.destination); o.type = 'sawtooth';
+        o.frequency.setValueAtTime(280, t);
+        o.frequency.linearRampToValueAtTime(180, t + 0.4);
+        g.gain.setValueAtTime(0.34, t);
+        g.gain.exponentialRampToValueAtTime(0.001, t + 0.52);
+        o.start(t); o.stop(t + 0.55);
+      }
+    }, `總結音效 ${Math.round(Number(pct) || 0)}%`);
   }
 };
 
@@ -135,8 +217,9 @@ const Sound = {
 const primeQuizSound = () => {
   if (!Sound.ctx || Sound.ctx.state !== 'running') void Sound.unlock();
 };
-document.addEventListener('pointerdown', primeQuizSound, { passive: true });
-document.addEventListener('keydown', primeQuizSound, { passive: true });
+document.addEventListener('pointerdown', primeQuizSound, { passive: true, capture: true });
+document.addEventListener('touchstart', primeQuizSound, { passive: true, capture: true });
+document.addEventListener('keydown', primeQuizSound, { passive: true, capture: true });
 
 // ===== ECDICT IndexedDB Module =====
 const ECDICT = {
@@ -2388,15 +2471,15 @@ Views.practice = {
       evaluating = true;
       ghost.readOnly = true;
       const snapshot = userInput;
-      // A microtask keeps the final key visually immediate without adding a full frame of latency.
-      queueMicrotask(() => {
-        if (this.state.showAnswer) return;
-        if (!this.state.waitingRetype) {
-          this._checkAnswer(word, snapshot, allBoxDivs, container, updateVisual, correctStr, maxLen);
-        } else {
-          this._checkRetype(word, snapshot, allBoxDivs, container, updateVisual, correctStr);
-        }
-      });
+      if (this.state.showAnswer) return;
+      // Run answer evaluation inside the native input event. This preserves the
+      // iOS user-activation token so AudioContext.resume() and the cue can start
+      // immediately after the final character, without adding input latency.
+      if (!this.state.waitingRetype) {
+        this._checkAnswer(word, snapshot, allBoxDivs, container, updateVisual, correctStr, maxLen);
+      } else {
+        this._checkRetype(word, snapshot, allBoxDivs, container, updateVisual, correctStr);
+      }
     };
 
     const applyNativeValue = () => {
@@ -2442,6 +2525,7 @@ Views.practice = {
     const quizArea = document.querySelector('.quiz-area');
     if (quizArea) quizArea.onclick = () => ghost.focus({ preventScroll: true });
 
+    void Sound.unlock();
     ghost.focus({ preventScroll: true });
     updateDefaultVisual();
   },
@@ -2454,12 +2538,10 @@ Views.practice = {
     const isCorrect = this._norm(typed) === canonical;
 
     if (isCorrect) {
-      TTS.stop();
       void Sound.playCorrect(); updateVisual('correct');
       // Brief pause so the green animation is visible, then show the Next button
       requestAnimationFrame(() => requestAnimationFrame(() => this.showNextBtn(word, container)));
     } else {
-      TTS.stop();
       void Sound.playWrong(); updateVisual('wrong');
       if (!this.state.wrongWords.find(w => w.id === word.id)) {
         this.state.wrongWords.push(word);
@@ -2477,12 +2559,10 @@ Views.practice = {
   _checkRetype(word, typed, allBoxDivs, container, updateVisual, correctStr) {
     const isCorrect = this._norm(typed) === this._norm(word.english);
     if (isCorrect) {
-      TTS.stop();
       void Sound.playCorrect(); updateVisual('correct');
       this.state.waitingRetype = false;
       requestAnimationFrame(() => requestAnimationFrame(() => this.showNextBtn(word, container)));
     } else {
-      TTS.stop();
       void Sound.playWrong(); updateVisual('wrong');
       setTimeout(() => { this.buildLetterBoxes(word, container); }, 800);
     }
@@ -2531,8 +2611,7 @@ Views.practice = {
     const state = this.state; const total = state.words.length; const wrongCount = state.wrongWords.length;
     const correctCount = total - wrongCount; const pct = total > 0 ? Math.round((correctCount/total)*100) : 0;
     DB.addPracticeSession(todayStr(), total, state.wrongWords.map(w=>({english:w.english,partOfSpeech:w.partOfSpeech,chinese:w.chinese})));
-    TTS.stop();
-    setTimeout(() => { void Sound.playResult(pct); }, 120);
+    setTimeout(() => { void Sound.playResult(pct); }, 150);
     container.innerHTML = `
       <div class="result-view">
         <div class="result-score">
@@ -4810,6 +4889,7 @@ Views.settings = {
     const autoSync    = DB.getGDriveAutoSync();
     const versionState = AppUpdater.getState();
     const storageState = AppStorage.getStatus();
+    const soundState = Sound.getStatus();
 
     const svgG  = '<svg viewBox="0 0 24 24" width="16" height="16" style="flex-shrink:0"><path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/><path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/><path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l3.66-2.84z"/><path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/></svg>';
     const svgUp = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" style="width:14px;height:14px"><polyline points="16 16 12 12 8 16"/><line x1="12" y1="12" x2="12" y2="21"/><path d="M20.39 18.39A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.3"/></svg>';
@@ -5159,11 +5239,73 @@ Views.settings = {
           <div id="update-status" style="font-size:12px;color:var(--text-muted);min-height:16px"></div>
         </div>
 
+        <!-- 8. 音效測試（設定頁最下方） -->
+        <div class="settings-section-label" style="margin-top:16px">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:15px;height:15px"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/></svg>
+          音效測試
+        </div>
+        <div class="settings-card sound-test-card">
+          <div class="sound-test-status ${soundState.state === 'running' ? 'is-running' : ''}" id="sound-test-status" role="status" aria-live="polite">
+            ${!soundState.supported ? '此瀏覽器不支援 Web Audio API' : soundState.state === 'running' ? '音效已啟用（AudioContext：running）' : '音效尚未啟用，請點擊下方任一測試按鈕'}
+          </div>
+          <div class="sound-test-grid">
+            <button class="btn-secondary sound-test-btn" id="test-correct-sound-btn" type="button">✓ 答對音效</button>
+            <button class="btn-secondary sound-test-btn" id="test-wrong-sound-btn" type="button">✕ 答錯音效</button>
+            <button class="btn-primary sound-test-btn sound-test-wide" id="test-result-sound-btn" type="button">♫ 總結音效（100%）</button>
+          </div>
+          <div class="settings-tip sound-test-tip">請先將 iPhone 的媒體音量調高，再逐一點擊測試。狀態顯示為 running 但仍聽不到時，請關閉靜音模式後再測試。</div>
+        </div>
+
         <div style="height:12px"></div>
       </div>
 
       <input type="file" id="one-click-import-input" accept=".csv,.zip" multiple style="display:none">
     `;
+
+    // ── 音效測試 ──
+    const soundStatusEl = document.getElementById('sound-test-status');
+    const updateSoundTestStatus = (prefix = '') => {
+      if (!soundStatusEl) return;
+      const status = Sound.getStatus();
+      const stateText = status.state === 'running' ? 'running（已啟用）'
+        : status.state === 'suspended' ? 'suspended（等待啟用）'
+        : status.state === 'interrupted' ? 'interrupted（被系統中斷）'
+        : status.state === 'not-created' ? '尚未建立'
+        : status.state;
+      const recent = status.lastPlayed ? `；最近播放：${status.lastPlayed}` : '';
+      const error = status.lastError ? `；錯誤：${status.lastError}` : '';
+      soundStatusEl.textContent = `${prefix}${prefix ? '｜' : ''}AudioContext：${stateText}${recent}${error}`;
+      soundStatusEl.classList.toggle('is-running', status.state === 'running' && !status.lastError);
+      soundStatusEl.classList.toggle('has-error', !!status.lastError || !status.supported);
+    };
+
+    const runSoundTest = async (type, button) => {
+      const originalText = button?.textContent || '';
+      if (button) { button.disabled = true; button.textContent = '播放中…'; }
+      try {
+        // playCorrect/playWrong/playResult invoke resume() synchronously from this
+        // click event, which is required by iOS standalone PWA audio policy.
+        const played = type === 'correct' ? await Sound.playCorrect()
+          : type === 'wrong' ? await Sound.playWrong()
+          : await Sound.playResult(100);
+        updateSoundTestStatus(played ? '已送出音效' : '未能播放');
+        showToast(played ? '🔊 已播放音效，請確認是否聽見' : '音效啟用失敗，請查看狀態', 2800);
+      } catch (error) {
+        Sound.lastError = error?.message || '測試播放失敗';
+        updateSoundTestStatus('播放失敗');
+        showToast('音效測試失敗');
+      } finally {
+        setTimeout(() => {
+          if (button) { button.disabled = false; button.textContent = originalText; }
+          updateSoundTestStatus();
+        }, type === 'result' ? 900 : 550);
+      }
+    };
+
+    document.getElementById('test-correct-sound-btn')?.addEventListener('click', e => runSoundTest('correct', e.currentTarget));
+    document.getElementById('test-wrong-sound-btn')?.addEventListener('click', e => runSoundTest('wrong', e.currentTarget));
+    document.getElementById('test-result-sound-btn')?.addEventListener('click', e => runSoundTest('result', e.currentTarget));
+    updateSoundTestStatus();
 
     // ── 1. API Key ──
     const input = document.getElementById('api-key-input');
