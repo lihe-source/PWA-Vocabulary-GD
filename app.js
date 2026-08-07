@@ -1,16 +1,18 @@
-import { AppStorage } from './storage.js?v=V7_0_4';
-import { BackupSchema } from './backup-schema.js?v=V7_0_4';
-import { VersionManager } from './version-manager.js?v=V7_0_4';
-import { TrendChart } from './chart-renderer.js?v=V7_0_4';
+import { AppStorage } from './storage.js?v=V7_1_0';
+import { BackupSchema } from './backup-schema.js?v=V7_1_0';
+import { VersionManager } from './version-manager.js?v=V7_1_0';
+import { TrendChart } from './chart-renderer.js?v=V7_1_0';
+import { PUSH_CONFIG } from './push-config.js?v=V7_1_0';
+import { ReminderManager, reminderErrorMessage } from './reminder-manager.js?v=V7_1_0';
 
 // ===========================
-// 英文單字複習 PWA - app.js V7_0_4
-// V7：IndexedDB 資料層、備份驗證、OAuth Token 安全化、自動更新
+// 英文單字複習 PWA - app.js V7_1_0
+// V7.1：每日 Web Push 提醒、IndexedDB 資料層、備份驗證與自動更新
 // ===========================
 
-const APP_VERSION = 'V7_0_4';
-const APP_DISPLAY_VERSION = 'V7.0.4';
-const APP_CACHE_VERSION = 'Voc-PWA-V7_0_4';
+const APP_VERSION = 'V7_1_0';
+const APP_DISPLAY_VERSION = 'V7.1.0';
+const APP_CACHE_VERSION = 'Voc-PWA-V7_1_0';
 const canActivateAppUpdate = () => {
   if (document.querySelector('#quiz-ghost-input, .essay-textarea, .reading-quiz-shell, .reading-loading, .ai-loading')) return false;
   const aiAskInput = document.querySelector('.aiask-textarea');
@@ -24,6 +26,7 @@ const AppUpdater = new VersionManager({
   storage: AppStorage,
   canActivate: canActivateAppUpdate
 });
+const DailyReminder = new ReminderManager({ storage: AppStorage, config: PUSH_CONFIG });
 const resumeAppUpdateWhenSafe = () => {
   void AppStorage.flush().then(() => {
     void AppUpdater.activateWaitingIfSafe();
@@ -3234,97 +3237,6 @@ Views.database = {
   aiCorrectMode: false, aiCorrectIds: new Set(),
   sortMode: AppStorage.getItem('dbSortMode') || 'createdAt',
   render(container) { this.deleteMode = false; this.selectedIds = new Set(); this.aiCorrectMode = false; this.aiCorrectIds = new Set(); this.renderList(container); },
-  // 僅更新單字列表區塊，不重整整頁（保留 ECDICT 搜尋結果）
-  _refreshWordList(container) {
-    const words = this._sortWords(DB.getWords());
-    const dm = this.deleteMode; const sel = this.selectedIds;
-    const acm = this.aiCorrectMode; const acs = this.aiCorrectIds;
-    // Update badge
-    const badge = container.querySelector('.word-count-badge');
-    if (badge) badge.textContent = `${words.length} 個單字`;
-    // Update sort bar active state
-    container.querySelectorAll('.db-sort-chip').forEach(b => b.classList.toggle('active', b.dataset.sort === this.sortMode));
-    // Rebuild word list
-    const listEl = document.getElementById('db-list');
-    if (!listEl) return;
-    if (words.length === 0) {
-      listEl.innerHTML = `<div class="db-empty"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" style="display:block;margin:auto"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg><div class="db-empty-title">資料庫是空的</div><div class="db-empty-sub">點選「新增」或從 ECDICT 搜尋加入單字</div></div>`;
-      return;
-    }
-    listEl.innerHTML = words.map(w => {
-      const boosted = DB.isBoosted(w.id);
-      return `<div class="db-word-card ${dm?'delete-mode':acm?'ai-correct-mode':''}" data-id="${w.id}">
-        <div class="db-checkbox ${dm&&sel.has(w.id)?'checked':acm&&acs.has(w.id)?'checked ai-check':''}" data-id="${w.id}"></div>
-        <div class="db-word-main">
-          <div class="db-word-en">${w.english}${w.partOfSpeech ? `<span class="db-word-pos">${w.partOfSpeech}</span>` : ''}${boosted?'<span class="boost-badge">⚡</span>':''}</div>
-          ${w.phonetic?`<div class="db-word-phonetic">/${w.phonetic}/</div>`:''}
-          <div class="db-word-zh">${w.chinese}</div>
-          <div class="db-word-meta"><span>${w.createdAt||'—'}</span><span>答錯 ${w.wrongCount||0}次</span>${(w.frequencyWeight||1)>1?`<span>加權${w.frequencyWeight}x</span>`:''}</div>
-        </div>
-        <div class="db-word-actions">
-          <button class="db-tts-btn" data-tts="${w.english}" title="播放發音"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/></svg></button>
-          ${(!dm&&!acm)?`<button class="db-word-edit-btn" data-edit="${w.id}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg></button>`:''}
-        </div>
-      </div>`;
-    }).join('');
-    // Re-wire TTS and edit buttons
-    listEl.querySelectorAll('.db-tts-btn').forEach(btn => {
-      btn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        TTS.speakWhenReady(btn.dataset.tts, 0.82);
-        btn.classList.add('tts-playing');
-        setTimeout(() => btn.classList.remove('tts-playing'), 1200);
-      });
-    });
-    listEl.querySelectorAll('[data-edit]').forEach(btn => {
-      btn.addEventListener('click', () => {
-        const word = DB.getWords().find(w => w.id === btn.dataset.edit);
-        if (word) this.showEditModal(word, container);
-      });
-    });
-    listEl.querySelectorAll('.db-checkbox').forEach(cb => cb.addEventListener('click', () => {
-      const id = cb.dataset.id;
-      if (this.deleteMode) {
-        this.selectedIds.has(id) ? this.selectedIds.delete(id) : this.selectedIds.add(id);
-        cb.classList.toggle('checked', this.selectedIds.has(id));
-        cb.classList.remove('ai-check');
-        const btn = document.getElementById('delete-toggle-btn');
-        if (btn) btn.innerHTML = svgTrash + (this.selectedIds.size > 0 ? `確認(${this.selectedIds.size})` : '確認');
-      } else if (this.aiCorrectMode) {
-        this.aiCorrectIds.has(id) ? this.aiCorrectIds.delete(id) : this.aiCorrectIds.add(id);
-        cb.classList.toggle('checked', this.aiCorrectIds.has(id));
-        cb.classList.toggle('ai-check', this.aiCorrectIds.has(id));
-        const btn = document.getElementById('ai-correct-run-btn');
-        if (btn) btn.textContent = this.aiCorrectIds.size > 0 ? `執行 AI 更正 (${this.aiCorrectIds.size})` : '執行 AI 更正';
-      }
-    }));
-    // ── Background: auto-fill missing partOfSpeech from ECDICT ──
-    // Handles words added/imported before the pos-fix (their partOfSpeech is empty in localStorage)
-    const missingPosWords = words.filter(w => !w.partOfSpeech);
-    if (missingPosWords.length > 0) {
-      ECDICT.isLoaded().then(loaded => {
-        if (!loaded) return;
-        missingPosWords.forEach(async (w) => {
-          try {
-            const rec = await ECDICT.lookup(w.english); // _enrichPos is applied inside lookup
-            if (!rec?.pos) return;
-            // Persist to localStorage so next render has it ready
-            DB.updateWord(w.id, { partOfSpeech: rec.pos });
-            // Update DOM in-place (no full re-render needed)
-            const enEl = listEl.querySelector(`.db-word-card[data-id="${w.id}"] .db-word-en`);
-            if (enEl && !enEl.querySelector('.db-word-pos')) {
-              const span = document.createElement('span');
-              span.className = 'db-word-pos';
-              span.textContent = rec.pos;
-              // Insert before boost-badge if present, otherwise append
-              const badge = enEl.querySelector('.boost-badge');
-              enEl.insertBefore(span, badge || null);
-            }
-          } catch {}
-        });
-      });
-    }
-  },
   _sortWords(words) {
     const arr = [...words];
     if (this.sortMode === 'alpha') {
@@ -5131,6 +5043,22 @@ Views.settings = {
     const versionState = AppUpdater.getState();
     const storageState = AppStorage.getStatus();
     const soundState = Sound.getStatus();
+    const reminderSettings = DailyReminder.getSettings();
+    const reminderCapabilities = DailyReminder.getCapabilities();
+    const reminderStatusClass = reminderSettings.enabled && reminderCapabilities.permission === 'granted'
+      ? 'is-enabled'
+      : reminderCapabilities.permission === 'denied' ? 'has-error' : '';
+    const reminderStatusText = !reminderCapabilities.supported
+      ? '此瀏覽器不支援 Web Push'
+      : reminderCapabilities.needsInstall
+        ? '請先加入 iPhone 主畫面，再由主畫面開啟'
+        : !reminderCapabilities.backendConfigured
+          ? '推播後端尚未設定'
+          : reminderCapabilities.permission === 'denied'
+            ? 'iOS 通知權限已關閉'
+            : reminderSettings.enabled
+              ? `已啟用，每日 ${reminderSettings.time} 提醒`
+              : '尚未啟用每日提醒';
 
     const svgG  = '<svg viewBox="0 0 24 24" width="16" height="16" style="flex-shrink:0"><path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/><path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/><path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l3.66-2.84z"/><path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/></svg>';
     const svgUp = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" style="width:14px;height:14px"><polyline points="16 16 12 12 8 16"/><line x1="12" y1="12" x2="12" y2="21"/><path d="M20.39 18.39A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.3"/></svg>';
@@ -5461,6 +5389,37 @@ Views.settings = {
           <div class="settings-tip" style="margin-bottom:0">免費方案每天有配額限制，每日例句每天只生成一次以節省配額。所有 Key 僅儲存於本機裝置。</div>
         </div>
 
+        <!-- 每日學習提醒 -->
+        <div class="settings-section-label" style="margin-top:16px">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:15px;height:15px"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9"/><path d="M10 21h4"/></svg>
+          每日學習提醒
+        </div>
+        <div class="settings-card reminder-card">
+          <div class="reminder-status ${reminderStatusClass}" id="reminder-status" role="status" aria-live="polite">
+            <span class="reminder-status-dot"></span>
+            <span id="reminder-status-text">${escapeHTML(reminderStatusText)}</span>
+          </div>
+          <label class="reminder-time-row" for="daily-reminder-time">
+            <span>
+              <strong>每日提醒時間</strong>
+              <small>使用目前裝置時區：${escapeHTML(reminderSettings.timeZone)}</small>
+            </span>
+            <input type="time" id="daily-reminder-time" class="reminder-time-input" value="${escapeAttr(reminderSettings.time)}" step="60">
+          </label>
+          <div class="reminder-next-row">
+            <span>下次提醒</span>
+            <strong id="reminder-next-time">${escapeHTML(DailyReminder.getNextReminderLabel())}</strong>
+          </div>
+          <div class="reminder-actions">
+            <button class="btn-primary" id="enable-reminder-btn" type="button">儲存並啟用</button>
+            <button class="btn-secondary" id="test-reminder-btn" type="button"${(!reminderSettings.enabled || reminderCapabilities.permission !== 'granted') ? ' disabled' : ''}>傳送測試通知</button>
+            <button class="btn-secondary reminder-disable-btn" id="disable-reminder-btn" type="button"${!reminderSettings.enabled ? ' disabled' : ''}>關閉提醒</button>
+          </div>
+          ${!reminderCapabilities.backendConfigured ? '<div class="reminder-warning">部署完成後，請先在 <code>push-config.js</code> 填入 Worker 網址。</div>' : ''}
+          ${reminderCapabilities.needsInstall ? '<div class="reminder-warning">iPhone 必須先從瀏覽器分享選單選擇「加入主畫面」，再由主畫面圖示開啟。</div>' : ''}
+          <div class="settings-tip reminder-tip">設定會綁定這台裝置，不會跟著 Google Drive 備份移轉。PWA 關閉後仍可通知；實際顯示時間可能受網路、專注模式或通知摘要影響。</div>
+        </div>
+
         <!-- 版本號 + 檢查更新 -->
         <div class="settings-section-label" style="margin-top:16px">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:15px;height:15px"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
@@ -5502,6 +5461,75 @@ Views.settings = {
 
       <input type="file" id="one-click-import-input" accept=".csv,.zip" multiple style="display:none">
     `;
+
+    // ── 每日 Web Push 提醒 ──
+    const reminderStatusEl = document.getElementById('reminder-status');
+    const reminderStatusTextEl = document.getElementById('reminder-status-text');
+    const setReminderStatus = (text, state = '') => {
+      if (reminderStatusTextEl) reminderStatusTextEl.textContent = text;
+      reminderStatusEl?.classList.toggle('is-enabled', state === 'enabled');
+      reminderStatusEl?.classList.toggle('is-pending', state === 'pending');
+      reminderStatusEl?.classList.toggle('has-error', state === 'error');
+    };
+
+    document.getElementById('enable-reminder-btn')?.addEventListener('click', async (event) => {
+      const button = event.currentTarget;
+      const time = document.getElementById('daily-reminder-time')?.value || '';
+      button.disabled = true;
+      button.textContent = '設定中…';
+      setReminderStatus('正在向 iOS 建立通知訂閱…', 'pending');
+      try {
+        const saved = await DailyReminder.enable(time);
+        setReminderStatus(`已啟用，每日 ${saved.time} 提醒`, 'enabled');
+        showToast(`✓ 每日 ${saved.time} 提醒已啟用`, 3000);
+        this.render(container);
+      } catch (error) {
+        const message = reminderErrorMessage(error);
+        setReminderStatus(message, 'error');
+        showToast(message, 4500);
+      } finally {
+        if (button.isConnected) {
+          button.disabled = false;
+          button.textContent = '儲存並啟用';
+        }
+      }
+    });
+
+    document.getElementById('test-reminder-btn')?.addEventListener('click', async (event) => {
+      const button = event.currentTarget;
+      button.disabled = true;
+      button.textContent = '傳送中…';
+      setReminderStatus('正在傳送測試通知…', 'pending');
+      try {
+        await DailyReminder.sendTest();
+        setReminderStatus(`已啟用，每日 ${DailyReminder.getSettings().time} 提醒`, 'enabled');
+        showToast('✓ 測試通知已送出，通常會在數秒內顯示', 3500);
+      } catch (error) {
+        const message = reminderErrorMessage(error);
+        setReminderStatus(message, 'error');
+        showToast(message, 4500);
+      } finally {
+        button.disabled = false;
+        button.textContent = '傳送測試通知';
+      }
+    });
+
+    document.getElementById('disable-reminder-btn')?.addEventListener('click', async (event) => {
+      const button = event.currentTarget;
+      button.disabled = true;
+      button.textContent = '關閉中…';
+      try {
+        await DailyReminder.disable();
+        showToast('每日提醒已關閉');
+        this.render(container);
+      } catch (error) {
+        const message = reminderErrorMessage(error);
+        setReminderStatus(message, 'error');
+        showToast(message, 4500);
+        button.disabled = false;
+        button.textContent = '關閉提醒';
+      }
+    });
 
     // ── 音效測試 ──
     const soundStatusEl = document.getElementById('sound-test-status');
@@ -5961,6 +5989,11 @@ Views.settings = {
 document.addEventListener('DOMContentLoaded', async () => {
   await AppStorage.init();
   await AppUpdater.register();
+
+  // Keep the device subscription, time zone and next trigger in sync whenever
+  // the PWA is opened. Permission is requested only from the Settings button.
+  setTimeout(() => { void DailyReminder.reconcile(); }, 1800);
+  try { await navigator.clearAppBadge?.(); } catch {}
 
   const offlineBanner = document.getElementById('offline-banner');
   const updateNetworkState = () => {

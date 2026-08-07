@@ -1,16 +1,18 @@
 const CACHE_PREFIX = 'Voc-PWA-';
-const CACHE_NAME = 'Voc-PWA-V7_0_4';
+const CACHE_NAME = 'Voc-PWA-V7_1_0';
 const APP_SHELL = [
   './',
   './index.html',
-  './style.css?v=V7_0_4',
-  './app.js?v=V7_0_4',
-  './manifest.json?v=V7_0_4',
+  './style.css?v=V7_1_0',
+  './app.js?v=V7_1_0',
+  './manifest.json?v=V7_1_0',
   './version.json',
-  './storage.js?v=V7_0_4',
-  './backup-schema.js?v=V7_0_4',
-  './version-manager.js?v=V7_0_4',
-  './chart-renderer.js?v=V7_0_4',
+  './storage.js?v=V7_1_0',
+  './backup-schema.js?v=V7_1_0',
+  './version-manager.js?v=V7_1_0',
+  './chart-renderer.js?v=V7_1_0',
+  './push-config.js?v=V7_1_0',
+  './reminder-manager.js?v=V7_1_0',
   './jszip.min.js?v=3_10_1',
   './icon-192.png',
   './icon-512.png'
@@ -66,6 +68,43 @@ async function cacheFirst(request) {
   return response;
 }
 
+self.addEventListener('push', event => {
+  let payload = {};
+  try { payload = event.data?.json() || {}; }
+  catch {
+    try { payload = { title: '英文單字複習時間到了', options: { body: event.data?.text() || '' } }; }
+    catch { payload = {}; }
+  }
+
+  const declarative = payload.notification || {};
+  const title = payload.title || declarative.title || '英文單字複習時間到了';
+  const options = payload.options || {
+    body: declarative.body || '每天複習一點點，保持英文學習節奏！',
+    icon: declarative.icon,
+    badge: declarative.badge,
+    tag: declarative.tag || 'vocabulary-daily-reminder',
+    data: declarative.data || payload.data || { url: './' }
+  };
+  event.waitUntil(self.registration.showNotification(title, options));
+});
+
+self.addEventListener('notificationclick', event => {
+  event.notification.close();
+  let targetUrl;
+  try { targetUrl = new URL(event.notification.data?.url || './', self.location.href).href; }
+  catch { targetUrl = new URL('./', self.location.href).href; }
+
+  event.waitUntil((async () => {
+    const windows = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+    for (const client of windows) {
+      if (new URL(client.url).origin !== new URL(targetUrl).origin) continue;
+      try { await client.navigate(targetUrl); } catch {}
+      return client.focus();
+    }
+    return self.clients.openWindow ? self.clients.openWindow(targetUrl) : undefined;
+  })());
+});
+
 self.addEventListener('fetch', event => {
   if (event.request.method !== 'GET') return;
   const url = new URL(event.request.url);
@@ -76,6 +115,14 @@ self.addEventListener('fetch', event => {
       const cache = await caches.open(CACHE_NAME);
       return (await cache.match(new URL('./version.json', self.location.href).href)) || Response.error();
     }));
+    return;
+  }
+
+  // Deployment-specific Worker URL may be filled in after the first GitHub
+  // Pages release. Always prefer the network so that change does not require
+  // another app version bump, while keeping the cached copy for offline use.
+  if (url.pathname.endsWith('/push-config.js')) {
+    event.respondWith(networkFirst(event.request));
     return;
   }
 

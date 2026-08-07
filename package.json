@@ -1,0 +1,23 @@
+{
+  "name": "pwa-vocabulary-gd-v7-1-0",
+  "version": "7.1.0",
+  "private": true,
+  "type": "module",
+  "description": "英文單字複習 PWA 與每日 Web Push 提醒後端",
+  "scripts": {
+    "check": "node --check app.js && node --check reminder-manager.js && node --check push-config.js && node --check sw.js && node --check worker.js",
+    "worker:dev": "wrangler dev --test-scheduled",
+    "worker:deploy": "wrangler deploy",
+    "db:init": "wrangler d1 execute vocabulary-reminders --remote --file=schema.sql",
+    "vapid:generate": "web-push generate-vapid-keys --json"
+  },
+  "dependencies": {
+    "web-push": "3.6.7"
+  },
+  "devDependencies": {
+    "wrangler": "4.120.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

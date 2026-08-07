@@ -1,6 +1,16 @@
-# PWA Vocabulary GD V7.0.4（扁平部署版）
+# PWA Vocabulary GD V7.1.0
 
-此版本專為手機直接上傳 GitHub 儲存庫設計。所有執行檔均位於根目錄，沒有任何子資料夾。
+PWA 前端執行檔均位於根目錄，可直接部署到 GitHub Pages。V7.1.0 另包含 Cloudflare Worker＋D1 推播後端，讓 iPhone 在 PWA 關閉後仍可依使用者設定的每日時間收到通知。
+
+## V7.1.0 更新
+
+- 設定頁新增每日提醒時間、啟用、測試通知與關閉提醒。
+- 支援 iOS 主畫面 PWA 的鎖定畫面、橫幅與通知中心 Web Push。
+- 新增 Cloudflare Worker、D1 資料表及每分鐘 Cron 排程。
+- 新增 VAPID Secrets、安全的裝置管理憑證、過期訂閱清理與有限次重試。
+- Service Worker 新增背景推播與點擊通知返回 PWA。
+- 版本更新至 V7.1.0，並保留開啟時自動檢查更新與設定頁手動更新。
+- 完整設定請閱讀 `SETUP_PUSH_NOTIFICATIONS.md`。
 
 ## V7.0.4 更新
 
@@ -32,10 +42,10 @@
 
 ## 部署方式
 
-將本資料夾內的所有檔案上傳到 GitHub Pages 使用的分支根目錄即可。請勿遺漏任何 `.js`、`.css`、`.json` 或圖示檔。
+將本資料夾內的檔案上傳到 GitHub Pages 使用的分支根目錄。前端部署後，必須另外完成 Cloudflare Worker、D1 與 VAPID 設定，PWA 關閉後的定時通知才會生效。
 
 ## 必須上傳的檔案
 
-`.nojekyll`、`index.html`、`app.js`、`style.css`、`sw.js`、`manifest.json`、`version.json`、`storage.js`、`backup-schema.js`、`version-manager.js`、`chart-renderer.js`、`jszip.min.js`、`icon-192.png`、`icon-512.png`。
+`.nojekyll`、`index.html`、`app.js`、`style.css`、`sw.js`、`manifest.json`、`version.json`、`storage.js`、`backup-schema.js`、`version-manager.js`、`chart-renderer.js`、`push-config.js`、`reminder-manager.js`、`jszip.min.js`、`icon-192.png`、`icon-512.png`。
 
-`README.md` 與 `JSZIP-LICENSE.md` 不影響程式執行，但建議一併保留。
+推播後端使用 `worker.js`、`schema.sql`、`wrangler.toml`、`package.json`、`package-lock.json` 與 `.github/workflows/deploy-reminder-worker.yml`。`README.md`、`SETUP_PUSH_NOTIFICATIONS.md`、CHANGELOG 與 `JSZIP-LICENSE.md` 不影響前端執行，但建議保留。

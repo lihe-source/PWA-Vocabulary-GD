@@ -1,0 +1,19 @@
+name = "vocabulary-daily-reminder"
+main = "worker.js"
+compatibility_date = "2026-08-07"
+compatibility_flags = ["nodejs_compat"]
+workers_dev = true
+
+[triggers]
+crons = ["* * * * *"]
+
+[vars]
+# Only the origin belongs in ALLOWED_ORIGINS (no repository path, no trailing slash).
+ALLOWED_ORIGINS = "https://YOUR_GITHUB_USERNAME.github.io"
+# APP_URL must include the repository path and trailing slash.
+APP_URL = "https://YOUR_GITHUB_USERNAME.github.io/YOUR_REPOSITORY/"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "vocabulary-reminders"
+database_id = "REPLACE_WITH_D1_DATABASE_ID"
