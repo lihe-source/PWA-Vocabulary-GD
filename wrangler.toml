@@ -13,6 +13,4 @@ APP_URL = "https://lihe-source.github.io/PWA-Vocabulary-GD/"
 [[d1_databases]]
 binding = "DB"
 database_name = "vocabulary-reminders"
-database_id = "	
-
-8886068d-480d-45ca-af8b-2c679d0fc150"
+database_id = "8886068d-480d-45ca-af8b-2c679d0fc150"
