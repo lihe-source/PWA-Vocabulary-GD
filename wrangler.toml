@@ -8,11 +8,8 @@ workers_dev = true
 crons = ["* * * * *"]
 
 [vars]
-# Only the origin belongs in ALLOWED_ORIGINS (no repository path, no trailing slash).
-ALLOWED_ORIGINS = "https://YOUR_GITHUB_USERNAME.github.io"
-# APP_URL must include the repository path and trailing slash.
-APP_URL = "https://YOUR_GITHUB_USERNAME.github.io/YOUR_REPOSITORY/"
-
+ALLOWED_ORIGINS = "https://lihe-source.github.io"
+APP_URL = "https://lihe-source.github.io/PWA-Vocabulary-GD/"
 [[d1_databases]]
 binding = "DB"
 database_name = "vocabulary-reminders"
