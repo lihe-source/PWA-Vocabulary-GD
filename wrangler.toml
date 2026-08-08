@@ -14,4 +14,4 @@ ALLOWED_ORIGINS = "https://lihe-source.github.io"
 [[d1_databases]]
 binding = "DB"
 database_name = "vocabulary-reminders"
-database_id = "20f5cc2b3db2afaf0bae4f90d6b775dd"
+database_id = "8886068d-480d-45ca-af8b-2c679d0fc150"
