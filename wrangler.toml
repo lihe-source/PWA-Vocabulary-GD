@@ -8,8 +8,9 @@ workers_dev = true
 crons = ["* * * * *"]
 
 [vars]
-ALLOWED_ORIGINS = "https://lihe-source.github.io"
 APP_URL = "https://lihe-source.github.io/PWA-Vocabulary-GD/"
+ALLOWED_ORIGINS = "https://lihe-source.github.io"
+
 [[d1_databases]]
 binding = "DB"
 database_name = "vocabulary-reminders"
