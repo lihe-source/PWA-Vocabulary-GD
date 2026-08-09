@@ -1,8 +1,17 @@
-# PWA Vocabulary GD V7.2.0
+# PWA Vocabulary GD V7.2.1
 
-PWA 前端執行檔均位於根目錄，可直接部署到 GitHub Pages。V7.2.0 新增跨裝置連續練習天數；原有 Cloudflare Worker＋D1 推播後端仍可讓 iPhone／iPad 在 PWA 關閉後依使用者設定時間收到通知。
+PWA 前端執行檔均位於根目錄，可直接部署到 GitHub Pages。V7.2.1 統一連續練習區塊與原有綠色主題，並修正設定頁在手機／平板上的排版；V7.2.0 新增的跨裝置連續練習天數與原有 Cloudflare Worker＋D1 推播功能均完整保留。
 
 本交付包採完全扁平結構，ZIP 內沒有外層專案資料夾、`backup/`、`tests/` 或 `.github/` 子資料夾；測試檔也已移至根目錄。手機解壓後可一次選取所有檔案上傳到 GitHub Repository 根目錄。
+
+## V7.2.1 更新
+
+- 首頁累積練習天數卡改用既有綠色主題、線條圖示與一致的左右留白。
+- 連續天數、歷史最久與累積天數的數字及狀態統一使用主題色，不再顯示橘紅色系。
+- 修正設定頁「跨裝置練習天數」在手機／iPad 被全寬按鈕擠壓成直排文字的問題。
+- 同步狀態、最後同步時間與操作按鈕改為穩定單欄排列，按鈕保留至少 44px 觸控高度。
+- PWA 快取版本更新為 `Voc-PWA-V7_2_1`，確保已安裝裝置取得新版樣式。
+- 現有 GitHub Pages、Cloudflare Worker、D1 與通知設定均保持不變；部署請閱讀 `DEPLOY_V7_2_1.md`。
 
 ## V7.2.0 更新
 
@@ -13,7 +22,7 @@ PWA 前端執行檔均位於根目錄，可直接部署到 GitHub Pages。V7.2.0
 - 完整 Drive JSON 備份升級為 Schema V8，並保留 V7.1.0 備份相容性。
 - 一鍵 ZIP 備份新增 `study_days_YYYYMMDD.csv`，設定頁可單獨檢視及匯出。
 - PWA 快取版本更新為 `Voc-PWA-V7_2_0`。
-- 部署與驗收請閱讀 `DEPLOY_V7_2_0.md`。
+- V7.2.0 的功能架構請閱讀 `CHANGELOG_V7_2_0.md`；目前部署步驟請以 `DEPLOY_V7_2_1.md` 為準。
 - 附件現行設定的保留範圍請閱讀 `CURRENT_SETTINGS_INCLUDED.md`。
 
 ## V7.1.0 更新

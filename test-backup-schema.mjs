@@ -15,7 +15,7 @@ const baseCollections = {
 };
 
 test('V8 backup includes study days and validates its checksum', () => {
-  const payload = BackupSchema.attach(baseCollections, { appVersion: 'V7.2.0', deviceId: 'test' });
+  const payload = BackupSchema.attach(baseCollections, { appVersion: 'V7.2.1', deviceId: 'test' });
   assert.equal(payload.schemaVersion, 8);
   assert.equal(payload.collectionCounts.studyDays, 1);
   assert.equal(BackupSchema.validate(payload).valid, true);

@@ -1,19 +1,19 @@
-import { AppStorage } from './storage.js?v=V7_2_0';
-import { BackupSchema } from './backup-schema.js?v=V7_2_0';
-import { VersionManager } from './version-manager.js?v=V7_2_0';
-import { TrendChart } from './chart-renderer.js?v=V7_2_0';
-import { PUSH_CONFIG } from './push-config.js?v=V7_2_0';
-import { ReminderManager, reminderErrorMessage } from './reminder-manager.js?v=V7_2_0';
-import { StudyStreakManager, STUDY_ACTIVITY_TYPES, STUDY_DAYS_CSV_HEADER, mergeStudyDays } from './study-streak.js?v=V7_2_0';
+import { AppStorage } from './storage.js?v=V7_2_1';
+import { BackupSchema } from './backup-schema.js?v=V7_2_1';
+import { VersionManager } from './version-manager.js?v=V7_2_1';
+import { TrendChart } from './chart-renderer.js?v=V7_2_1';
+import { PUSH_CONFIG } from './push-config.js?v=V7_2_1';
+import { ReminderManager, reminderErrorMessage } from './reminder-manager.js?v=V7_2_1';
+import { StudyStreakManager, STUDY_ACTIVITY_TYPES, STUDY_DAYS_CSV_HEADER, mergeStudyDays } from './study-streak.js?v=V7_2_1';
 
 // ===========================
-// 英文單字複習 PWA - app.js V7_2_0
-// V7.2：跨裝置連續練習天數、Google Drive 聯集合併、備份 Schema V8
+// 英文單字複習 PWA - app.js V7_2_1
+// V7.2.1：統一練習天數綠色主題、修正設定頁行動裝置排版
 // ===========================
 
-const APP_VERSION = 'V7_2_0';
-const APP_DISPLAY_VERSION = 'V7.2.0';
-const APP_CACHE_VERSION = 'Voc-PWA-V7_2_0';
+const APP_VERSION = 'V7_2_1';
+const APP_DISPLAY_VERSION = 'V7.2.1';
+const APP_CACHE_VERSION = 'Voc-PWA-V7_2_1';
 const canActivateAppUpdate = () => {
   if (document.querySelector('#quiz-ghost-input, .essay-textarea, .reading-quiz-shell, .reading-loading, .ai-loading')) return false;
   const aiAskInput = document.querySelector('.aiask-textarea');
@@ -2315,7 +2315,9 @@ Views.home = {
       <div id="home-view">
         <section class="study-streak-card" aria-labelledby="study-streak-title">
           <div class="study-streak-heading">
-            <div class="study-streak-icon" aria-hidden="true">🔥</div>
+            <div class="study-streak-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2s1 4-2 6c-2 1-3-1-3-1s-4 4-2 9a6 6 0 0 0 12 0c1-4-2-7-5-8 1-2 0-4 0-6z"/><path d="M10 17c0 1.1.9 2 2 2s2-.9 2-2c0-1-.7-1.7-1.5-2.3-.1.8-.6 1.3-1.2 1.5-.5.1-.9-.2-1.1-.6-.1.4-.2.9-.2 1.4z"/></svg>
+            </div>
             <div>
               <div class="study-streak-title" id="study-streak-title">累積練習天數</div>
               <div class="study-streak-today ${streak.practicedToday ? 'is-complete' : ''}" id="streak-today-state">${streak.practicedToday ? '今天已完成練習' : '今天尚未完成練習'}</div>
