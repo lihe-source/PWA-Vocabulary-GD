@@ -1,4 +1,4 @@
-# GitHub Pages＋每日推播提醒設定指南（V7.1.0）
+# GitHub Pages＋每日推播提醒設定指南（V7.2.0）
 
 本版本使用兩個部署位置：
 
@@ -25,7 +25,7 @@ GitHub Pages 是靜態網站，無法在 PWA 關閉後執行計時器，因此�
 ## 二、部署 PWA 到 GitHub Pages
 
 1. 在 GitHub 建立或開啟原本的 PWA Repository。
-2. 將 ZIP 最外層資料夾裡的檔案全部上傳到 Repository 根目錄。
+2. 本交付 ZIP 採扁平結構；解壓後將全部檔案直接上傳到 Repository 根目錄。
 3. 到 Repository 的 **Settings → Pages**。
 4. 在 **Build and deployment** 選擇：
    - Source：`Deploy from a branch`
@@ -141,7 +141,7 @@ export const PUSH_CONFIG = Object.freeze({
 開啟 Worker 網址，應看到：
 
 ```json
-{"ok":true,"service":"Vocabulary Daily Reminder","version":"V7.1.0","configured":true}
+{"ok":true,"service":"Vocabulary Daily Reminder","version":"V7.2.0","configured":true}
 ```
 
 若 `configured` 是 `false`，代表 D1、VAPID Secrets 或 `APP_URL` 尚未完成。
@@ -159,19 +159,17 @@ export const PUSH_CONFIG = Object.freeze({
 
 提醒時間、時區與裝置訂閱會綁定目前這台裝置。不同 iPhone／iPad 必須各自啟用一次。
 
-## 八、設定 GitHub Actions 自動更新 Worker（建議）
+## 八、後續更新 Worker
 
-本專案已包含 `.github/workflows/deploy-reminder-worker.yml`，預設只接受手動執行，不會在尚未設定時自動失敗。
+為了讓手機可一次上傳全部檔案，本包刻意不建立 `.github/workflows/` 子資料夾。現有 Repository 若已有 Worker Workflow，普通檔案上傳不會刪除它，仍可沿用。若沒有 Workflow，可在原本設定 Worker 的終端機執行：
 
-1. 在 Cloudflare 建立僅限此帳號的 API Token，權限使用 **Edit Cloudflare Workers**。
-2. 找到 Cloudflare Account ID。
-3. 到 GitHub Repository：**Settings → Secrets and variables → Actions**。
-4. 新增兩個 Repository secrets：
-   - `CLOUDFLARE_API_TOKEN`
-   - `CLOUDFLARE_ACCOUNT_ID`
-5. 到 GitHub **Actions → Deploy reminder Worker → Run workflow**。
+```powershell
+npm install
+npx wrangler login
+npm run worker:deploy
+```
 
-之後修改 `worker.js` 時，可再次手動執行該 Workflow。VAPID Secrets 已保存在 Cloudflare，不需要重新輸入。
+只要 Worker 名稱與 `wrangler.toml` 的 D1 Database ID 不變，重新部署不會清除提醒資料；VAPID Secrets 仍保存在 Cloudflare，不需要重新輸入。
 
 ## 九、驗收檢查
 

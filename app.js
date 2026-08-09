@@ -1,18 +1,19 @@
-import { AppStorage } from './storage.js?v=V7_1_0';
-import { BackupSchema } from './backup-schema.js?v=V7_1_0';
-import { VersionManager } from './version-manager.js?v=V7_1_0';
-import { TrendChart } from './chart-renderer.js?v=V7_1_0';
-import { PUSH_CONFIG } from './push-config.js?v=V7_1_0';
-import { ReminderManager, reminderErrorMessage } from './reminder-manager.js?v=V7_1_0';
+import { AppStorage } from './storage.js?v=V7_2_0';
+import { BackupSchema } from './backup-schema.js?v=V7_2_0';
+import { VersionManager } from './version-manager.js?v=V7_2_0';
+import { TrendChart } from './chart-renderer.js?v=V7_2_0';
+import { PUSH_CONFIG } from './push-config.js?v=V7_2_0';
+import { ReminderManager, reminderErrorMessage } from './reminder-manager.js?v=V7_2_0';
+import { StudyStreakManager, STUDY_ACTIVITY_TYPES, STUDY_DAYS_CSV_HEADER, mergeStudyDays } from './study-streak.js?v=V7_2_0';
 
 // ===========================
-// 英文單字複習 PWA - app.js V7_1_0
-// V7.1：每日 Web Push 提醒、IndexedDB 資料層、備份驗證與自動更新
+// 英文單字複習 PWA - app.js V7_2_0
+// V7.2：跨裝置連續練習天數、Google Drive 聯集合併、備份 Schema V8
 // ===========================
 
-const APP_VERSION = 'V7_1_0';
-const APP_DISPLAY_VERSION = 'V7.1.0';
-const APP_CACHE_VERSION = 'Voc-PWA-V7_1_0';
+const APP_VERSION = 'V7_2_0';
+const APP_DISPLAY_VERSION = 'V7.2.0';
+const APP_CACHE_VERSION = 'Voc-PWA-V7_2_0';
 const canActivateAppUpdate = () => {
   if (document.querySelector('#quiz-ghost-input, .essay-textarea, .reading-quiz-shell, .reading-loading, .ai-loading')) return false;
   const aiAskInput = document.querySelector('.aiask-textarea');
@@ -581,6 +582,7 @@ const DB = {
     else history.unshift({ date, sessions: [session] });
     if (history.length > 180) history.length = 180;
     this.saveReadingQuizHistory(history);
+    recordStudyActivity(STUDY_ACTIVITY_TYPES.READING_QUIZ, `reading:${session.id}`);
     return session;
   },
   exportReadingQuizCSV() {
@@ -646,6 +648,8 @@ const DB = {
     }
     if (history.length > 180) history.length = 180;
     this.saveEssayHistory(history);
+    recordStudyActivity(STUDY_ACTIVITY_TYPES.ESSAY_REVIEW, `essay:${newSession.ts}`);
+    return newSession;
   },
   exportEssayCSV() {
     const history = this.getEssayHistory();
@@ -694,6 +698,7 @@ const DB = {
     history.unshift(entry);
     if (history.length > 300) history.length = 300;
     this.saveAiAskHistory(history);
+    recordStudyActivity(STUDY_ACTIVITY_TYPES.AI_ASK, `aiask:${entry.id || 'entry'}:${entry.ts || Date.now()}`);
   },
   exportAiAskCSV() {
     const history = this.getAiAskHistory();
@@ -731,6 +736,7 @@ const DB = {
       wrongWordDetails.forEach(wd => { if (!existing.wrongWordDetails.find(e => e.english === wd.english)) existing.wrongWordDetails.push(wd); });
     } else { history.push({ date, correct, wrong, total: totalWords, wrongWordDetails }); }
     this.saveHistory(history);
+    recordStudyActivity(STUDY_ACTIVITY_TYPES.WORD_QUIZ, `word:${date}:${Date.now()}`);
   },
   getApiKey() { return AppStorage.getItem('geminiApiKey') || ''; },
   saveApiKey(key) { AppStorage.setItem('geminiApiKey', key); },
@@ -863,7 +869,8 @@ const DB = {
     sentences: 'date,wordEn,wordPos,wordZh,en,zh',
     stats:     '日期,總題數,正確,錯誤,正確率%',
     reading:   '日期,分數,正確題數,總題數,使用單字,文章,題目結果,時間戳',
-    aiask:     'ID,問題,回覆,時間戳'
+    aiask:     'ID,問題,回覆,時間戳',
+    studyDays: STUDY_DAYS_CSV_HEADER
   },
   // 自動偵測 CSV 類型，回傳 'vocab' | 'sentences' | 'stats' | null
   detectCSVType(text) {
@@ -876,8 +883,11 @@ const DB = {
     if (clean === this.CSV_HEADERS.reading)    return 'reading';
     if (clean === this.CSV_HEADERS.essay)      return 'essay';
     if (clean === this.CSV_HEADERS.aiask)      return 'aiask';
+    if (clean === this.CSV_HEADERS.studyDays)  return 'studyDays';
     return null;
   },
+  exportStudyDaysCSV() { return StudyStreak.exportCSV(); },
+  importStudyDaysCSV(text) { return StudyStreak.importCSV(text); },
   exportCSV() {
     const words = this.getWords();
     const header = ['英文單字','詞性','中文','音標','答錯次數','建立日期','頻率加權'];
@@ -983,6 +993,63 @@ const DB = {
     result.push(current); return result;
   }
 };
+
+function getOrCreateVocabularyDeviceId() {
+  let id = AppStorage.getItem('vocabDeviceId') || '';
+  if (!id) {
+    id = crypto.randomUUID?.() || `device-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    AppStorage.setItem('vocabDeviceId', id);
+  }
+  return id;
+}
+
+const StudyStreak = new StudyStreakManager({
+  storage: AppStorage,
+  getDeviceId: getOrCreateVocabularyDeviceId
+});
+
+function getStudyHistorySources() {
+  return {
+    history: DB.getHistory(),
+    readingQuizHistory: DB.getReadingQuizHistory(),
+    essayHistory: DB.getEssayHistory(),
+    aiAskHistory: DB.getAiAskHistory()
+  };
+}
+
+function refreshStudyStreakUI() {
+  const summary = StudyStreak.getSummary();
+  const values = {
+    'streak-current-days': summary.current,
+    'streak-longest-days': summary.longest,
+    'streak-total-days': summary.totalDays,
+    'settings-streak-current': summary.current,
+    'settings-streak-longest': summary.longest,
+    'settings-streak-total': summary.totalDays
+  };
+  Object.entries(values).forEach(([id, value]) => {
+    const element = document.getElementById(id);
+    if (element) element.textContent = String(value);
+  });
+  const todayState = document.getElementById('streak-today-state');
+  if (todayState) {
+    todayState.textContent = summary.practicedToday ? '今天已完成練習' : '今天尚未完成練習';
+    todayState.classList.toggle('is-complete', summary.practicedToday);
+  }
+  const syncState = document.getElementById('study-streak-sync-status');
+  if (syncState) {
+    const state = StudyStreak.getSyncState();
+    syncState.textContent = state.pending
+      ? '本機有待同步的練習天數'
+      : state.lastSync ? `練習天數已同步：${new Date(state.lastSync).toLocaleString('zh-TW')}` : '練習天數尚未同步';
+  }
+}
+
+function recordStudyActivity(type, eventId = '') {
+  StudyStreak.recordActivity(type, { eventId: `${getOrCreateVocabularyDeviceId()}:${eventId || Date.now()}` });
+  refreshStudyStreakUI();
+  queueMicrotask(() => GDrive.scheduleStudyStreakSync());
+}
 
 // ===== GEMINI API =====
 const Gemini = {
@@ -1532,6 +1599,9 @@ const GDrive = {
   _email: null,
   _client: null,
   _clientKey: '',
+  _streakSyncTimer: null,
+  _streakSyncPromise: null,
+  STUDY_STREAK_FILE: 'vocab_study_streak.json',
   SESSION_KEYS: {
     token: 'gdriveToken',
     email: 'gdriveEmail',
@@ -1722,16 +1792,13 @@ const GDrive = {
     }
     this._client = null;
     this._clientKey = '';
+    clearTimeout(this._streakSyncTimer);
+    this._streakSyncTimer = null;
     this._clearSession();
   },
 
   _getDeviceId() {
-    let id = AppStorage.getItem('vocabDeviceId') || '';
-    if (!id) {
-      id = crypto.randomUUID?.() || `device-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-      AppStorage.setItem('vocabDeviceId', id);
-    }
-    return id;
+    return getOrCreateVocabularyDeviceId();
   },
 
   _buildCollections() {
@@ -1743,7 +1810,8 @@ const GDrive = {
       boosted: DB.getBoostedWords(),
       readingQuizHistory: DB.getReadingQuizHistory(),
       essayHistory: DB.getEssayHistory(),
-      aiAskHistory: DB.getAiAskHistory()
+      aiAskHistory: DB.getAiAskHistory(),
+      studyDays: StudyStreak.getDays()
     };
   },
 
@@ -1771,12 +1839,156 @@ const GDrive = {
       '加強 ' + (counts.boosted || 0),
       '閱讀測驗 ' + (counts.reading || 0),
       '文章 ' + (counts.essay || 0),
-      'AI詢問 ' + (counts.aiAsk || 0)
+      'AI詢問 ' + (counts.aiAsk || 0),
+      '練習天數 ' + (counts.studyDays || 0)
     ].join('・');
+  },
+
+  async _listStudyStreakFiles() {
+    const q = `name='${this.STUDY_STREAK_FILE}' and mimeType='application/json' and trashed=false`;
+    const params = new URLSearchParams({ q, fields: 'files(id,name,createdTime,modifiedTime)', orderBy: 'modifiedTime desc', pageSize: '20' });
+    const response = await fetch('https://www.googleapis.com/drive/v3/files?' + params, {
+      headers: { Authorization: 'Bearer ' + this._token }
+    });
+    if (!response.ok) {
+      if (response.status === 401) this._clearTokenOnly();
+      throw new Error('STREAK_LIST_FAILED: ' + response.status);
+    }
+    return (await response.json()).files || [];
+  },
+
+  async _downloadStudyStreakFile(fileId) {
+    const response = await fetch(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}?alt=media`, {
+      headers: { Authorization: 'Bearer ' + this._token }
+    });
+    if (!response.ok) {
+      if (response.status === 401) this._clearTokenOnly();
+      throw new Error('STREAK_DOWNLOAD_FAILED: ' + response.status);
+    }
+    const data = await response.json();
+    if (!data || !Array.isArray(data.studyDays)) throw new Error('STREAK_FILE_INVALID');
+    return data;
+  },
+
+  _buildStudyStreakPayload(studyDays) {
+    return {
+      dataType: 'vocabulary-study-streak',
+      schemaVersion: 1,
+      appVersion: APP_DISPLAY_VERSION,
+      deviceId: this._getDeviceId(),
+      userEmail: this.getUserEmail(),
+      revision: Date.now(),
+      updatedAt: new Date().toISOString(),
+      studyDays: mergeStudyDays(studyDays)
+    };
+  },
+
+  async _createStudyStreakFile(payload) {
+    const boundary = 'streak_boundary_' + Date.now();
+    const folderId = DB.getGDriveFolderId();
+    const metadata = {
+      name: this.STUDY_STREAK_FILE,
+      mimeType: 'application/json',
+      description: 'Vocabulary PWA cross-device study streak',
+      appProperties: { dataType: 'vocabulary-study-streak' },
+      ...(folderId ? { parents: [folderId] } : {})
+    };
+    const body = '--' + boundary + '\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n'
+      + JSON.stringify(metadata) + '\r\n--' + boundary + '\r\nContent-Type: application/json\r\n\r\n'
+      + JSON.stringify(payload) + '\r\n--' + boundary + '--';
+    const response = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer ' + this._token, 'Content-Type': 'multipart/related; boundary=' + boundary },
+      body
+    });
+    if (!response.ok) {
+      if (response.status === 401) this._clearTokenOnly();
+      throw new Error('STREAK_CREATE_FAILED: ' + response.status);
+    }
+    return response.json();
+  },
+
+  async _updateStudyStreakFile(fileId, payload) {
+    const response = await fetch(`https://www.googleapis.com/upload/drive/v3/files/${encodeURIComponent(fileId)}?uploadType=media`, {
+      method: 'PATCH',
+      headers: { Authorization: 'Bearer ' + this._token, 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    if (!response.ok) {
+      if (response.status === 401) this._clearTokenOnly();
+      throw new Error('STREAK_UPDATE_FAILED: ' + response.status);
+    }
+    return response.json();
+  },
+
+  async _readStudyStreakFiles(files) {
+    const days = [];
+    for (const file of files) {
+      try {
+        const payload = await this._downloadStudyStreakFile(file.id);
+        days.push(...payload.studyDays);
+      } catch (error) {
+        console.warn('[GDrive] Ignored unreadable streak file.', file.id, error.message);
+      }
+    }
+    return mergeStudyDays(days);
+  },
+
+  async syncStudyStreak(options = {}) {
+    if (this._streakSyncPromise) return this._streakSyncPromise;
+    this._streakSyncPromise = (async () => {
+      await this.ensureToken(options);
+      let merged = StudyStreak.getDays();
+      let files = await this._listStudyStreakFiles();
+
+      // Two union/write/read passes close the normal race where two devices add
+      // different dates at nearly the same time. No side ever overwrites a date
+      // that exists on the other side.
+      for (let pass = 0; pass < 2; pass++) {
+        const cloudDays = await this._readStudyStreakFiles(files);
+        merged = mergeStudyDays(merged, cloudDays);
+        const payload = this._buildStudyStreakPayload(merged);
+        if (!files.length) {
+          const created = await this._createStudyStreakFile(payload);
+          files = [{ id: created.id, name: this.STUDY_STREAK_FILE }];
+        } else {
+          await Promise.all(files.map(file => this._updateStudyStreakFile(file.id, payload)));
+        }
+        const verifiedFiles = await this._listStudyStreakFiles();
+        const verifiedDays = await this._readStudyStreakFiles(verifiedFiles);
+        const verifiedMerge = mergeStudyDays(merged, verifiedDays);
+        files = verifiedFiles;
+        if (JSON.stringify(verifiedMerge) === JSON.stringify(merged)) break;
+        merged = verifiedMerge;
+      }
+
+      StudyStreak.replace(merged, { markPending: false });
+      const syncedAt = new Date().toISOString();
+      StudyStreak.markSynced(syncedAt);
+      refreshStudyStreakUI();
+      return { studyDays: merged, summary: StudyStreak.getSummary(), syncedAt };
+    })();
+    try { return await this._streakSyncPromise; }
+    finally { this._streakSyncPromise = null; }
+  },
+
+  scheduleStudyStreakSync(delay = 1200) {
+    clearTimeout(this._streakSyncTimer);
+    this._streakSyncTimer = null;
+    if (!navigator.onLine || !this.hasRememberedSession() || !DB.getGDriveClientId()) return;
+    this._streakSyncTimer = setTimeout(() => {
+      this._streakSyncTimer = null;
+      void this.syncStudyStreak({ interactive: false }).catch(error => {
+        StudyStreak.markPending();
+        refreshStudyStreakUI();
+        console.warn('[GDrive] Study streak sync deferred.', error.message);
+      });
+    }, delay);
   },
 
   async upload(options = {}) {
     await this.ensureToken(options);
+    await this.syncStudyStreak(options);
     const data     = this._buildPayload();
     const folderId = DB.getGDriveFolderId();
     const ts       = new Date().toISOString().replace(/[:.]/g, '-');
@@ -1791,6 +2003,7 @@ const GDrive = {
       reading:   dataCounts.reading,
       essay:     dataCounts.essay,
       aiAsk:     dataCounts.aiAsk,
+      studyDays: dataCounts.studyDays,
       total:     dataCounts.total,
       version:   APP_DISPLAY_VERSION
     };
@@ -1890,6 +2103,9 @@ const GDrive = {
       if (Array.isArray(data.readingQuizHistory)) AppStorage.setItem('readingQuizHistory', JSON.stringify(data.readingQuizHistory));
       if (Array.isArray(data.essayHistory)) AppStorage.setItem('essayHistory',      JSON.stringify(data.essayHistory));
       if (Array.isArray(data.aiAskHistory)) AppStorage.setItem('aiAskHistory',      JSON.stringify(data.aiAskHistory));
+      if (validation.sourceSchemaVersion >= 8) {
+        StudyStreak.replace(data.studyDays || [], { markPending: true });
+      }
     } else {
       const lw = DB.getWords(); const cw = data.words || [];
       const merged = [...lw]; cw.forEach(w => { const key = String(w.english || w.wordEn || '').toLowerCase(); if (key && !merged.find(x => String(x.english || x.wordEn || '').toLowerCase() === key)) merged.push(w); });
@@ -1925,9 +2141,15 @@ const GDrive = {
         const la = DB.getAiAskHistory(); const as = new Set(la.map(e => e.id));
         AppStorage.setItem('aiAskHistory', JSON.stringify([...la, ...data.aiAskHistory.filter(e => !as.has(e.id))]));
       }
+      StudyStreak.merge(data.studyDays || [], { markPending: true });
+    }
+    if (validation.sourceSchemaVersion < 8) {
+      StudyStreak.migrateFromHistories(getStudyHistorySources(), { markPending: true });
     }
     const now = new Date().toLocaleString('zh-TW');
     DB.setGDriveLastSync(now);
+    refreshStudyStreakUI();
+    this.scheduleStudyStreakSync(300);
     return now;
   }
 };
@@ -2088,8 +2310,30 @@ const Views = {};
 // ===========================
 Views.home = {
   render(container) {
+    const streak = StudyStreak.getSummary();
     container.innerHTML = `
       <div id="home-view">
+        <section class="study-streak-card" aria-labelledby="study-streak-title">
+          <div class="study-streak-heading">
+            <div class="study-streak-icon" aria-hidden="true">🔥</div>
+            <div>
+              <div class="study-streak-title" id="study-streak-title">累積練習天數</div>
+              <div class="study-streak-today ${streak.practicedToday ? 'is-complete' : ''}" id="streak-today-state">${streak.practicedToday ? '今天已完成練習' : '今天尚未完成練習'}</div>
+            </div>
+            <div class="study-streak-total"><strong id="streak-total-days">${streak.totalDays}</strong><span>累積天數</span></div>
+          </div>
+          <div class="study-streak-metrics">
+            <div class="study-streak-metric is-current">
+              <span>連續練習天數</span>
+              <strong><b id="streak-current-days">${streak.current}</b> 天</strong>
+            </div>
+            <div class="study-streak-divider" aria-hidden="true"></div>
+            <div class="study-streak-metric">
+              <span>歷史最久練習天數</span>
+              <strong><b id="streak-longest-days">${streak.longest}</b> 天</strong>
+            </div>
+          </div>
+        </section>
         <div class="home-hero" id="hero-card">
           <div class="hero-label">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
@@ -2136,6 +2380,7 @@ Views.home = {
     const cached = DB.getTodaySentenceAny();
     if (cached) { this.displaySentence(cached); }
     this.renderSentenceLog();
+    refreshStudyStreakUI();
   },
   async loadSentence(forceNew) {
     const heroContent = document.getElementById('hero-content');
@@ -5075,7 +5320,11 @@ Views.settings = {
     const essayHistoryAll   = DB.getEssayHistory();
     const totalEssay        = essayHistoryAll.reduce((s,h) => s + (h.sessions||[]).length, 0);
     const totalAiAsk        = DB.getAiAskHistory().length;
+    const studyDays         = StudyStreak.getDays();
+    const streakSummary     = StudyStreak.getSummary();
+    const streakSyncState   = StudyStreak.getSyncState();
     const dateTag           = todayStr().replace(/\//g,'-');
+    const compactDateTag    = todayStr().replace(/\D/g,'');
 
     container.innerHTML = `
       <div class="section-header"><h1 class="section-title">設定</h1></div>
@@ -5101,6 +5350,13 @@ Views.settings = {
               <input type="checkbox" id="gd-auto-sync"${autoSync ? ' checked' : ''}>
               <span>每次開啟 APP 自動同步（雲端資料較多才自動還原）</span>
             </label>
+            <div class="study-streak-sync-row">
+              <div class="study-streak-sync-copy">
+                <strong>跨裝置練習天數</strong>
+                <small id="study-streak-sync-status">${streakSyncState.pending ? '本機有待同步的練習天數' : streakSyncState.lastSync ? '練習天數已同步：' + escapeHTML(new Date(streakSyncState.lastSync).toLocaleString('zh-TW')) : '練習天數尚未同步'}</small>
+              </div>
+              <button class="btn-secondary" id="gd-streak-sync-btn" type="button">立即同步</button>
+            </div>
             <button class="btn-secondary" id="local-recovery-btn" style="width:100%;margin-top:9px">本機復原點</button>
             ${remembered ? '<div class="settings-tip" style="margin-top:8px">iOS PWA 關閉後可能需要 Google 再確認一次授權；本程式會保留帳號並在上傳/還原時自動續權，不會清空登入設定。</div>' : ''}
             <button class="btn-fb-signout-bottom" id="gd-signout-btn" style="margin-top:10px">
@@ -5123,7 +5379,7 @@ Views.settings = {
           一鍵匯出全部
         </div>
         <div class="settings-card">
-          <div class="one-click-export-desc">同時匯出單字庫、例句庫、統計資料、文章閱讀測驗、文章撰寫、AI 詢問記錄，方便備份或跨裝置移轉。</div>
+          <div class="one-click-export-desc">同時匯出單字庫、例句庫、統計資料、練習天數、文章閱讀測驗、文章撰寫與 AI 詢問記錄，方便備份或跨裝置移轉。</div>
           <div class="one-click-summary-grid one-click-summary-grid-compact">
             <div class="oc-stat-cell">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>
@@ -5149,6 +5405,10 @@ Views.settings = {
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
               <div class="oc-stat-num">${totalAiAsk}</div><div class="oc-stat-label">AI 詢問</div>
             </div>
+            <div class="oc-stat-cell">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2s1 4-2 6c-2 1-3-1-3-1s-4 4-2 9a6 6 0 0 0 12 0c1-4-2-7-5-8 1-2 0-4 0-6z"/></svg>
+              <div class="oc-stat-num" id="settings-streak-total">${streakSummary.totalDays}</div><div class="oc-stat-label">練習天數</div>
+            </div>
           </div>
           <button class="btn-one-click-export" id="one-click-export-btn">
             <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" style="width:20px;height:20px"><rect x="2" y="2" width="20" height="20" rx="2" fill="#5b8dd9" stroke="#3a6bc4" stroke-width="1.5"/><rect x="6" y="2" width="12" height="8" rx="1" fill="#a8c4f0" stroke="#3a6bc4" stroke-width="1.2"/><rect x="9" y="3.5" width="4" height="5" rx="0.5" fill="#3a6bc4"/><rect x="4" y="13" width="16" height="7" rx="1" fill="#d6e8ff" stroke="#3a6bc4" stroke-width="1.2"/></svg>
@@ -5159,7 +5419,7 @@ Views.settings = {
             <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" style="width:20px;height:20px"><path d="M2 7C2 5.9 2.9 5 4 5H10L12 7H20C21.1 7 22 7.9 22 9V18C22 19.1 21.1 20 20 20H4C2.9 20 2 19.1 2 18V7Z" fill="#f5a623" stroke="#d4891a" stroke-width="1.5" stroke-linejoin="round"/><path d="M2 10H22V18C22 19.1 21.1 20 20 20H4C2.9 20 2 19.1 2 18V10Z" fill="#ffc84a" stroke="#d4891a" stroke-width="1.5" stroke-linejoin="round"/></svg>
             一鍵匯入（CSV / ZIP）
           </button>
-          <div class="one-click-import-hint">可選取單字/例句/統計 CSV，或直接選取備份 ZIP 檔一鍵還原</div>
+          <div class="one-click-import-hint">可選取各類資料 CSV（包含練習天數），或直接選取備份 ZIP 檔一鍵還原</div>
         </div>
 
         <!-- 3. 折疊資訊：預設收合 -->
@@ -5250,6 +5510,39 @@ Views.settings = {
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4h6v2"/></svg>清除全部
               </button>
             </div>
+          </div>
+        </details>
+
+        <details class="settings-collapsible-card">
+          <summary class="settings-collapse-summary">
+            <span class="settings-collapse-title">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2s1 4-2 6c-2 1-3-1-3-1s-4 4-2 9a6 6 0 0 0 12 0c1-4-2-7-5-8 1-2 0-4 0-6z"/></svg>
+              累積練習天數
+            </span>
+            <span class="settings-collapse-count">${streakSummary.totalDays} 天</span>
+            <span class="settings-collapse-chevron">⌄</span>
+          </summary>
+          <div class="settings-card settings-collapse-body">
+            <div class="sentence-stats-row">
+              <div class="sentence-stat-box">
+                <div class="sentence-stat-num" id="settings-streak-current">${streakSummary.current}</div>
+                <div class="sentence-stat-label">目前連續</div>
+              </div>
+              <div class="sentence-stat-box">
+                <div class="sentence-stat-num" id="settings-streak-longest" style="color:#e67e00">${streakSummary.longest}</div>
+                <div class="sentence-stat-label">歷史最久</div>
+              </div>
+              <div class="sentence-stat-box">
+                <div class="sentence-stat-num">${studyDays.reduce((sum, day) => sum + (Number(day.sessionCount) || 0), 0)}</div>
+                <div class="sentence-stat-label">練習事件</div>
+              </div>
+            </div>
+            <div class="settings-btn-row">
+              <button class="btn-icon btn-export" id="export-study-days-btn" style="flex:1">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="2" y="2" width="20" height="20" rx="2"/><path d="M12 4v11m0 0-4-4m4 4 4-4"/><path d="M6 19h12"/></svg>匯出 CSV
+              </button>
+            </div>
+            <div class="settings-tip" style="margin-top:9px;margin-bottom:0">完成單字測驗、閱讀測驗、文章 AI 批改或 AI 詢問即記錄；同一天只計為 1 個練習日。</div>
           </div>
         </details>
 
@@ -5429,7 +5722,7 @@ Views.settings = {
           <div class="version-info-grid">
             <div><span>當前版本</span><strong>${APP_DISPLAY_VERSION}</strong></div>
             <div><span>最新版本</span><strong id="latest-version-value">${escapeHTML(versionState.latestVersion)}</strong></div>
-            <div><span>資料儲存</span><strong>${storageState.mode === 'indexeddb' ? 'IndexedDB V7' : '相容模式'}</strong></div>
+            <div><span>資料儲存</span><strong>${storageState.mode === 'indexeddb' ? 'IndexedDB V8' : '相容模式'}</strong></div>
           </div>
           <div id="version-last-check" class="version-last-check">${versionState.lastCheckedAt ? '最後檢查：' + new Date(versionState.lastCheckedAt).toLocaleString('zh-TW') : '尚未檢查更新'}</div>
           <button class="btn-secondary" id="check-update-btn" style="width:100%;margin-bottom:8px">
@@ -5635,6 +5928,12 @@ Views.settings = {
         () => { DB.saveHistory([]); showToast('已清除練習統計'); this.render(container); });
     });
 
+    // ── 累積練習天數 ──
+    document.getElementById('export-study-days-btn')?.addEventListener('click', () => {
+      if (!studyDays.length) { showToast('尚無累積練習天數'); return; }
+      downloadCSV(DB.exportStudyDaysCSV(), `study_days_${compactDateTag}.csv`);
+      showToast('✓ 練習天數 CSV 已匯出');
+    });
     // ── 4a. 文章閱讀測驗 ──
     document.getElementById('export-reading-btn')?.addEventListener('click', () => {
       if (!totalReading) { showToast('尚無文章閱讀測驗記錄'); return; }
@@ -5674,7 +5973,7 @@ Views.settings = {
     // ── 5. 一鍵匯出：打包成單一 ZIP 一次下載 ──
     document.getElementById('one-click-export-btn').addEventListener('click', async () => {
       const words = DB.getWords(); const sentCsv = DB.exportSentencesCSV(); const statHistory = DB.getHistory(); const readingHistory = DB.getReadingQuizHistory();
-      if (!words.length && !sentCsv.includes('\n') && !statHistory.length && !readingHistory.length && !DB.getEssayHistory().length && !DB.getAiAskHistory().length) { showToast('尚無資料可匯出'); return; }
+      if (!words.length && !sentCsv.includes('\n') && !statHistory.length && !readingHistory.length && !DB.getEssayHistory().length && !DB.getAiAskHistory().length && !studyDays.length) { showToast('尚無資料可匯出'); return; }
       showToast('⏳ 正在打包...', 1800);
       try {
         const zip = new window.JSZip();
@@ -5686,10 +5985,11 @@ Views.settings = {
         if (essayHistory.length)    zip.file(`essay_${dateTag}.csv`,     '\uFEFF' + DB.exportEssayCSV());
         const aiAskHistory = DB.getAiAskHistory();
         if (aiAskHistory.length)    zip.file(`aiask_${dateTag}.csv`,     '\uFEFF' + DB.exportAiAskCSV());
+        if (studyDays.length)       zip.file(`study_days_${compactDateTag}.csv`, '\uFEFF' + DB.exportStudyDaysCSV());
         const blob = await zip.generateAsync({ type: 'blob', compression: 'DEFLATE' });
         const url = URL.createObjectURL(blob); const a = document.createElement('a');
         a.href = url; a.download = `vocab-backup_${dateTag}.zip`; a.click(); URL.revokeObjectURL(url);
-        const count = [words.length, sentCsv.includes('\n'), statHistory.length, readingHistory.length, essayHistory.length, aiAskHistory.length].filter(Boolean).length;
+        const count = [words.length, sentCsv.includes('\n'), statHistory.length, readingHistory.length, essayHistory.length, aiAskHistory.length, studyDays.length].filter(Boolean).length;
         showToast(`✓ 已匯出 ${count} 個檔案（ZIP）`, 3000);
       } catch(err) {
         showToast('匯出失敗，請重試');
@@ -5728,6 +6028,9 @@ Views.settings = {
           } else if (type === 'aiask') {
             const r = DB.importAiAskCSV(text);
             results.push(`💬 AI 詢問（${name}）：新增 ${r.added} 筆`);
+          } else if (type === 'studyDays') {
+            const r = DB.importStudyDaysCSV(text);
+            results.push(`🔥 練習天數（${name}）：新增 ${r.added} 天，共 ${r.total} 天`);
           }
         } catch(err) {
           errors.push(`${name}（${err.message||'格式錯誤'}）`);
@@ -5775,6 +6078,12 @@ Views.settings = {
         }
       }
 
+      if (results.length > 0) {
+        StudyStreak.migrateFromHistories(getStudyHistorySources(), { markPending: true });
+        GDrive.scheduleStudyStreakSync(300);
+        refreshStudyStreakUI();
+      }
+
       // Show result modal
       const lines = [
         ...results.map(r => `<div class="batch-result-ok">✓ ${r}</div>`),
@@ -5816,7 +6125,14 @@ Views.settings = {
       btn.disabled = true; btn.textContent = '登入中…';
       try {
         await GDrive.signIn();
-        showToast('✓ 已登入 ' + GDrive.getUserEmail());
+        try {
+          await GDrive.syncStudyStreak({ interactive: true });
+          showToast('✓ 已登入並同步練習天數：' + GDrive.getUserEmail());
+        } catch (syncError) {
+          StudyStreak.markPending();
+          console.warn('[GDrive] Initial study streak sync failed.', syncError.message);
+          showToast('已登入；練習天數稍後再同步', 3200);
+        }
         this.render(container);
       } catch(err) {
         let msg = '登入失敗，請稍後再試';
@@ -5826,6 +6142,22 @@ Views.settings = {
         if (err.message === 'access_denied')   msg = '授權被拒絕，請確認 Client ID 設定';
         showToast(msg, 3500);
         btn.disabled = false; btn.textContent = '使用 Google 帳號登入';
+      }
+    });
+
+    document.getElementById('gd-streak-sync-btn')?.addEventListener('click', async (event) => {
+      const button = event.currentTarget;
+      button.disabled = true;
+      button.textContent = '同步中…';
+      try {
+        const result = await GDrive.syncStudyStreak({ interactive: true });
+        showToast(`✓ 練習天數已同步，共 ${result.summary.totalDays} 天`, 3000);
+        this.render(container);
+      } catch (error) {
+        StudyStreak.markPending();
+        showToast('練習天數同步失敗：' + error.message, 3500);
+        button.disabled = false;
+        button.textContent = '立即同步';
       }
     });
 
@@ -5870,6 +6202,7 @@ Views.settings = {
             if (sm.sentences != null) parts.push('例句 ' + sm.sentences + ' 筆');
             if (sm.stats     != null) parts.push('統計 ' + sm.stats + ' 筆');
             if (sm.essay     != null) parts.push('文章 ' + sm.essay + ' 篇');
+            if (sm.studyDays != null) parts.push('練習天數 ' + sm.studyDays + ' 天');
             meta = parts.join('・');
           } catch {}
           return `<button class="fb-slot-btn" data-fid="${f.id}" style="width:100%;text-align:left;padding:10px 12px;border-radius:10px;border:1.5px solid var(--border);background:var(--bg);cursor:pointer;margin-bottom:6px">
@@ -5892,7 +6225,7 @@ Views.settings = {
               Modal.show(`<div class="modal-handle"></div>
                 <div class="modal-title">套用備份</div>
                 <p style="font-size:13px;color:var(--text-muted);margin-bottom:14px">
-                  單字 ${(data.words||[]).length} 個・統計 ${(data.history||[]).length} 筆<br>
+                  單字 ${(data.words||[]).length} 個・統計 ${(data.history||[]).length} 筆・練習天數 ${Array.isArray(data.studyDays) ? data.studyDays.length + ' 天' : '舊版自動換算'}<br>
                   備份時間：${data.updatedAt ? new Date(data.updatedAt).toLocaleString('zh-TW') : '—'}
                 </p>
                 <div style="display:flex;flex-direction:column;gap:8px">
@@ -5988,6 +6321,7 @@ Views.settings = {
 // ===========================
 document.addEventListener('DOMContentLoaded', async () => {
   await AppStorage.init();
+  StudyStreak.migrateFromHistories(getStudyHistorySources(), { markPending: true });
   await AppUpdater.register();
 
   // Keep the device subscription, time zone and next trigger in sync whenever
@@ -6001,7 +6335,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     offlineBanner.hidden = navigator.onLine;
     document.documentElement.classList.toggle('is-offline', !navigator.onLine);
   };
-  window.addEventListener('online', updateNetworkState);
+  window.addEventListener('online', () => {
+    updateNetworkState();
+    GDrive.scheduleStudyStreakSync(150);
+  });
   window.addEventListener('offline', updateNetworkState);
   updateNetworkState();
 
@@ -6012,6 +6349,13 @@ document.addEventListener('DOMContentLoaded', async () => {
   // ── Google Drive: restore token + auto-sync on startup ──
   try {
     const restored = await GDrive.tryRestoreToken();
+    if (restored) {
+      try { await GDrive.syncStudyStreak({ interactive: false }); }
+      catch (error) {
+        StudyStreak.markPending();
+        console.warn('[GDrive] Startup study streak sync deferred.', error.message);
+      }
+    }
     if (restored && DB.getGDriveAutoSync()) {
       showToast('☁️ 檢查雲端備份中…', 1800);
       try {

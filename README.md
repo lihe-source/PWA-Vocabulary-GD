@@ -1,6 +1,20 @@
-# PWA Vocabulary GD V7.1.0
+# PWA Vocabulary GD V7.2.0
 
-PWA 前端執行檔均位於根目錄，可直接部署到 GitHub Pages。V7.1.0 另包含 Cloudflare Worker＋D1 推播後端，讓 iPhone 在 PWA 關閉後仍可依使用者設定的每日時間收到通知。
+PWA 前端執行檔均位於根目錄，可直接部署到 GitHub Pages。V7.2.0 新增跨裝置連續練習天數；原有 Cloudflare Worker＋D1 推播後端仍可讓 iPhone／iPad 在 PWA 關閉後依使用者設定時間收到通知。
+
+本交付包採完全扁平結構，ZIP 內沒有外層專案資料夾、`backup/`、`tests/` 或 `.github/` 子資料夾；測試檔也已移至根目錄。手機解壓後可一次選取所有檔案上傳到 GitHub Repository 根目錄。
+
+## V7.2.0 更新
+
+- 主頁「今日例句」上方新增累積練習天數卡，顯示目前連續、歷史最久與累積天數。
+- 完成單字測驗、閱讀測驗、文章 AI 批改或成功的 AI 詢問時記錄練習日；同一天只計 1 天。
+- 自動將 V7.1.0 的既有練習歷史遷移為練習日。
+- Google Drive 新增 `vocab_study_streak.json`，同一 Google 帳號在不同裝置登入後以聯集方式同步，不會因較舊裝置覆蓋較新天數。
+- 完整 Drive JSON 備份升級為 Schema V8，並保留 V7.1.0 備份相容性。
+- 一鍵 ZIP 備份新增 `study_days_YYYYMMDD.csv`，設定頁可單獨檢視及匯出。
+- PWA 快取版本更新為 `Voc-PWA-V7_2_0`。
+- 部署與驗收請閱讀 `DEPLOY_V7_2_0.md`。
+- 附件現行設定的保留範圍請閱讀 `CURRENT_SETTINGS_INCLUDED.md`。
 
 ## V7.1.0 更新
 
@@ -46,6 +60,6 @@ PWA 前端執行檔均位於根目錄，可直接部署到 GitHub Pages。V7.1.0
 
 ## 必須上傳的檔案
 
-`.nojekyll`、`index.html`、`app.js`、`style.css`、`sw.js`、`manifest.json`、`version.json`、`storage.js`、`backup-schema.js`、`version-manager.js`、`chart-renderer.js`、`push-config.js`、`reminder-manager.js`、`jszip.min.js`、`icon-192.png`、`icon-512.png`。
+`.nojekyll`、`index.html`、`app.js`、`style.css`、`sw.js`、`manifest.json`、`version.json`、`storage.js`、`backup-schema.js`、`study-streak.js`、`version-manager.js`、`chart-renderer.js`、`push-config.js`、`reminder-manager.js`、`jszip.min.js`、`icon-192.png`、`icon-512.png`。
 
-推播後端使用 `worker.js`、`schema.sql`、`wrangler.toml`、`package.json`、`package-lock.json` 與 `.github/workflows/deploy-reminder-worker.yml`。`README.md`、`SETUP_PUSH_NOTIFICATIONS.md`、CHANGELOG 與 `JSZIP-LICENSE.md` 不影響前端執行，但建議保留。
+推播後端使用根目錄的 `worker.js`、`schema.sql`、`wrangler.toml`、`package.json` 與 `package-lock.json`。為維持完全扁平結構，本包不新增 `.github/workflows/`；既有 Repository 內的 Workflow 不會因上傳本包而被刪除。`README.md`、設定指南、CHANGELOG 與測試檔不影響前端執行，但建議一併上傳保存。

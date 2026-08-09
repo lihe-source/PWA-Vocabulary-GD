@@ -9,6 +9,7 @@ const INDEXED_KEYS = new Set([
   'readingQuizHistory',
   'essayHistory',
   'aiAskHistory',
+  'studyActivityDays',
   'sentenceLog',
   'importedSentences',
   'boostedWords',
@@ -53,7 +54,7 @@ class StorageBridge {
       this._localRemove('gdriveToken');
       this._localRemove('gdriveExpiry');
       try { sessionStorage.removeItem('gdriveToken'); sessionStorage.removeItem('gdriveExpiry'); } catch {}
-      this._localSet('storageSchemaVersion', '7');
+      this._localSet('storageSchemaVersion', '8');
       this._localSet('storageMigratedAt', new Date().toISOString());
       this.ready = true;
       return this.getStatus();
@@ -69,7 +70,7 @@ class StorageBridge {
     return {
       ready: this.ready,
       mode: this.db && !this.fallback ? 'indexeddb' : 'localstorage-fallback',
-      schemaVersion: 7
+      schemaVersion: 8
     };
   }
 
