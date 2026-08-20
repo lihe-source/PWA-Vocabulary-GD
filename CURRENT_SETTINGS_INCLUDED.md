@@ -1,4 +1,4 @@
-# 現行設定保留確認（V7.2.1）
+# 現行設定保留確認（V7.2.2）
 
 本版本已逐項比對使用者提供的 `PWA-Vocabulary-GD-main (2).zip`，並保留以下部署設定。
 
@@ -10,14 +10,14 @@
 | `wrangler.toml` | Worker 名稱 `vocabulary-daily-reminder`、每分鐘 Cron、GitHub Pages APP URL、允許來源、既有 D1 Database ID |
 | `schema.sql` | 既有 reminders 資料表結構；使用 `IF NOT EXISTS`，不會清除遠端資料 |
 | `reminder-manager.js` | 原有通知訂閱、測試通知、時間與時區同步流程 |
-| `worker.js` | 原有 Worker 功能完整保留，只將服務版本更新為 `V7.2.1` |
+| `worker.js` | 原有 Worker 功能完整保留，只將服務版本更新為 `V7.2.2` |
 | `push-config.js`、`wrangler.toml`、`schema.sql`、`reminder-manager.js` | 與附件對應檔案逐位元相同 |
 
 ## 更新後不會被清除的項目
 
 | 項目 | 實際保存位置 | 保留方式 |
 |---|---|---|
-| 單字、測驗、例句、AI 紀錄、練習天數 | 瀏覽器 IndexedDB | V7.2.1 沿用 `pwa_vocabulary_v7` 與邏輯 Schema 8，不重新建立資料庫 |
+| 單字、測驗、例句、AI 紀錄、練習天數 | 瀏覽器 IndexedDB | V7.2.2 沿用 `pwa_vocabulary_v7` 與邏輯 Schema 8，不重新建立資料庫 |
 | Gemini API Key | 瀏覽器 IndexedDB | 沿用原鍵名 `geminiApiKey` |
 | Google Drive Client ID、資料夾 ID、自動同步設定 | 同一網站來源的本機儲存空間 | 上傳靜態檔不會清除瀏覽器儲存 |
 | Google 帳號識別 | 同一網站來源的本機儲存空間 | 帳號 Email 會保留；Google Access Token 仍採安全的工作階段保存機制 |

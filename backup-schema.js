@@ -4,25 +4,53 @@ const LEGACY_COLLECTION_KEYS = [
 ];
 const COLLECTION_KEYS = [...LEGACY_COLLECTION_KEYS, 'studyDays'];
 
-function stableStringify(value) {
-  if (value === null || typeof value !== 'object') return JSON.stringify(value);
-  if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`;
-  const keys = Object.keys(value).sort();
-  return `{${keys.map(key => `${JSON.stringify(key)}:${stableStringify(value[key])}`).join(',')}}`;
-}
-
-function hashString(text) {
-  let hash = 0x811c9dc5;
-  for (let i = 0; i < text.length; i++) {
-    hash ^= text.charCodeAt(i);
+function updateHash(hash, text) {
+  const value = String(text ?? '');
+  for (let i = 0; i < value.length; i++) {
+    hash ^= value.charCodeAt(i);
     hash = Math.imul(hash, 0x01000193);
   }
+  return hash;
+}
+
+function walkStable(value, emit) {
+  if (value === null || typeof value !== 'object') {
+    emit(JSON.stringify(value));
+    return;
+  }
+  if (Array.isArray(value)) {
+    emit('[');
+    value.forEach((item, index) => {
+      if (index) emit(',');
+      walkStable(item, emit);
+    });
+    emit(']');
+    return;
+  }
+  const keys = Object.keys(value).sort();
+  emit('{');
+  keys.forEach((key, index) => {
+    if (index) emit(',');
+    emit(JSON.stringify(key));
+    emit(':');
+    walkStable(value[key], emit);
+  });
+  emit('}');
+}
+
+function hashStable(value) {
+  let hash = 0x811c9dc5;
+  walkStable(value, chunk => { hash = updateHash(hash, chunk); });
   return (`00000000${(hash >>> 0).toString(16)}`).slice(-8);
 }
 
 function safeArray(value) {
   return Array.isArray(value) ? value : [];
 }
+
+const SORTED_COLLECTION_KEYS = [...COLLECTION_KEYS].sort();
+
+
 
 export const BackupSchema = {
   schemaVersion: 8,
@@ -63,17 +91,17 @@ export const BackupSchema = {
 
   hashes(data = {}) {
     const collections = this.normalize(data);
-    return Object.fromEntries(COLLECTION_KEYS.map(key => [key, hashString(stableStringify(collections[key]))]));
+    return Object.fromEntries(COLLECTION_KEYS.map(key => [key, hashStable(collections[key])]));
   },
 
   checksum(data = {}) {
-    return hashString(stableStringify(this.normalize(data)));
+    return hashStable(this.normalize(data));
   },
 
   legacyChecksum(data = {}) {
     const normalized = this.normalize(data);
     const legacy = Object.fromEntries(LEGACY_COLLECTION_KEYS.map(key => [key, normalized[key]]));
-    return hashString(stableStringify(legacy));
+    return hashStable(legacy);
   },
 
   validate(data) {
@@ -93,6 +121,27 @@ export const BackupSchema = {
     const normalized = this.normalize(collections);
     const now = new Date().toISOString();
     const backupId = crypto.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
+    // V7.2.2: compute the whole backup checksum and per-collection hashes
+    // in the same traversal. This avoids repeatedly materializing huge canonical
+    // strings on the Safari main thread.
+    let payloadHashState = 0x811c9dc5;
+    const hashByKey = {};
+    payloadHashState = updateHash(payloadHashState, '{');
+    SORTED_COLLECTION_KEYS.forEach((key, index) => {
+      if (index) payloadHashState = updateHash(payloadHashState, ',');
+      payloadHashState = updateHash(payloadHashState, JSON.stringify(key));
+      payloadHashState = updateHash(payloadHashState, ':');
+      let collectionHashState = 0x811c9dc5;
+      walkStable(normalized[key], chunk => {
+        payloadHashState = updateHash(payloadHashState, chunk);
+        collectionHashState = updateHash(collectionHashState, chunk);
+      });
+      hashByKey[key] = (`00000000${(collectionHashState >>> 0).toString(16)}`).slice(-8);
+    });
+    payloadHashState = updateHash(payloadHashState, '}');
+    const collectionHashes = Object.fromEntries(COLLECTION_KEYS.map(key => [key, hashByKey[key]]));
+    const payloadChecksum = (`00000000${(payloadHashState >>> 0).toString(16)}`).slice(-8);
     const metadata = {
       schemaVersion: 8,
       backupId,
@@ -102,8 +151,8 @@ export const BackupSchema = {
       updatedAt: now,
       appVersion: appVersion || '',
       collectionCounts: this.counts(normalized),
-      collectionHashes: this.hashes(normalized),
-      payloadChecksum: this.checksum(normalized)
+      collectionHashes,
+      payloadChecksum
     };
     // Keep collections at the top level for V6 restore compatibility without duplicating the payload.
     return { ...normalized, ...metadata };
@@ -120,8 +169,12 @@ export const BackupSchema = {
     const cloudMore = keys.some(key => (cloudCounts[key] || 0) > (localCounts[key] || 0));
     const sameCounts = keys.every(key => (cloudCounts[key] || 0) === (localCounts[key] || 0));
     const compareLegacy = (Number(localData?.schemaVersion) || 0) < 8 || (Number(cloudData?.schemaVersion) || 0) < 8;
-    const localHash = compareLegacy ? this.legacyChecksum(localData) : this.checksum(localData);
-    const cloudHash = compareLegacy ? this.legacyChecksum(cloudData) : this.checksum(cloudData);
+    const localHash = compareLegacy
+      ? this.legacyChecksum(localData)
+      : (localData?.payloadChecksum || this.checksum(localData));
+    const cloudHash = compareLegacy
+      ? this.legacyChecksum(cloudData)
+      : (cloudData?.payloadChecksum || this.checksum(cloudData));
     return {
       localCounts,
       cloudCounts,

@@ -1,4 +1,4 @@
-# GitHub Pages＋每日推播提醒設定指南（V7.2.1）
+# GitHub Pages＋每日推播提醒設定指南（V7.2.2）
 
 本版本使用兩個部署位置：
 
@@ -141,7 +141,7 @@ export const PUSH_CONFIG = Object.freeze({
 開啟 Worker 網址，應看到：
 
 ```json
-{"ok":true,"service":"Vocabulary Daily Reminder","version":"V7.2.1","configured":true}
+{"ok":true,"service":"Vocabulary Daily Reminder","version":"V7.2.2","configured":true}
 ```
 
 若 `configured` 是 `false`，代表 D1、VAPID Secrets 或 `APP_URL` 尚未完成。

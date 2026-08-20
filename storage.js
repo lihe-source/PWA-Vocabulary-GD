@@ -39,17 +39,30 @@ class StorageBridge {
     if (this.ready) return this.getStatus();
     try {
       this.db = await this._open();
+
+      // V7.2.2: load all IndexedDB values in one readonly transaction instead of
+      // opening a separate transaction for every key. This is noticeably faster
+      // on iOS/PWA startup, especially after the OS has suspended the app.
+      const records = await this._getAllRecords();
+      const recordMap = new Map(records.map(record => [record.key, record]));
+      const migrations = [];
+
       for (const key of INDEXED_KEYS) {
-        const record = await this._getRecord(key);
+        const record = recordMap.get(key);
         const legacy = this._localGet(key);
         if (record && typeof record.value === 'string') {
           this.cache.set(key, record.value);
         } else if (legacy !== null) {
           this.cache.set(key, legacy);
-          await this._putRecord(key, legacy);
+          migrations.push([key, legacy]);
         }
+      }
+
+      if (migrations.length) await this._putRecords(migrations);
+      for (const key of INDEXED_KEYS) {
         if (this.cache.has(key)) this._localRemove(key);
       }
+
       // Remove legacy OAuth access tokens left by V6.6. Account identity remains remembered.
       this._localRemove('gdriveToken');
       this._localRemove('gdriveExpiry');
@@ -114,6 +127,26 @@ class StorageBridge {
     await Promise.allSettled([...this.pending]);
   }
 
+  async setItemsBatch(entries) {
+    const pairs = Array.isArray(entries) ? entries : Object.entries(entries || {});
+    if (!pairs.length) return;
+
+    const indexed = [];
+    const local = [];
+    for (const [key, value] of pairs) {
+      const stringValue = String(value);
+      this.cache.set(key, stringValue);
+      if (INDEXED_KEYS.has(key) && this.db && !this.fallback) indexed.push([key, stringValue]);
+      else local.push([key, stringValue]);
+    }
+
+    for (const [key, value] of local) this._localSet(key, value);
+    if (indexed.length) {
+      await this._putRecords(indexed);
+      for (const [key] of indexed) this._localRemove(key);
+    }
+  }
+
   async createRecoverySnapshot(payload, reason = 'manual') {
     if (!this.db || this.fallback) return null;
     const id = `${Date.now()}-${crypto.randomUUID?.() || Math.random().toString(36).slice(2)}`;
@@ -169,6 +202,27 @@ class StorageBridge {
       const req = tx.objectStore(KV_STORE).get(key);
       req.onsuccess = () => resolve(req.result || null);
       req.onerror = () => resolve(null);
+    });
+  }
+
+  _getAllRecords() {
+    return new Promise(resolve => {
+      const tx = this.db.transaction(KV_STORE, 'readonly');
+      const req = tx.objectStore(KV_STORE).getAll();
+      req.onsuccess = () => resolve(req.result || []);
+      req.onerror = () => resolve([]);
+    });
+  }
+
+  _putRecords(entries) {
+    return new Promise((resolve, reject) => {
+      const tx = this.db.transaction(KV_STORE, 'readwrite');
+      const store = tx.objectStore(KV_STORE);
+      const updatedAt = new Date().toISOString();
+      for (const [key, value] of entries) store.put({ key, value, updatedAt });
+      tx.oncomplete = resolve;
+      tx.onerror = () => reject(tx.error);
+      tx.onabort = () => reject(tx.error);
     });
   }
 

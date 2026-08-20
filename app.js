@@ -1,19 +1,19 @@
-import { AppStorage } from './storage.js?v=V7_2_1';
-import { BackupSchema } from './backup-schema.js?v=V7_2_1';
-import { VersionManager } from './version-manager.js?v=V7_2_1';
-import { TrendChart } from './chart-renderer.js?v=V7_2_1';
-import { PUSH_CONFIG } from './push-config.js?v=V7_2_1';
-import { ReminderManager, reminderErrorMessage } from './reminder-manager.js?v=V7_2_1';
-import { StudyStreakManager, STUDY_ACTIVITY_TYPES, STUDY_DAYS_CSV_HEADER, mergeStudyDays } from './study-streak.js?v=V7_2_1';
+import { AppStorage } from './storage.js?v=V7_2_2';
+import { BackupSchema } from './backup-schema.js?v=V7_2_2';
+import { VersionManager } from './version-manager.js?v=V7_2_2';
+import { TrendChart } from './chart-renderer.js?v=V7_2_2';
+import { PUSH_CONFIG } from './push-config.js?v=V7_2_2';
+import { ReminderManager, reminderErrorMessage } from './reminder-manager.js?v=V7_2_2';
+import { StudyStreakManager, STUDY_ACTIVITY_TYPES, STUDY_DAYS_CSV_HEADER, mergeStudyDays } from './study-streak.js?v=V7_2_2';
 
 // ===========================
-// 英文單字複習 PWA - app.js V7_2_1
-// V7.2.1：統一練習天數綠色主題、修正設定頁行動裝置排版
+// 英文單字複習 PWA - app.js V7_2_2
+// V7.2.2：統一練習天數綠色主題、修正設定頁行動裝置排版
 // ===========================
 
-const APP_VERSION = 'V7_2_1';
-const APP_DISPLAY_VERSION = 'V7.2.1';
-const APP_CACHE_VERSION = 'Voc-PWA-V7_2_1';
+const APP_VERSION = 'V7_2_2';
+const APP_DISPLAY_VERSION = 'V7.2.2';
+const APP_CACHE_VERSION = 'Voc-PWA-V7_2_2';
 const canActivateAppUpdate = () => {
   if (document.querySelector('#quiz-ghost-input, .essay-textarea, .reading-quiz-shell, .reading-loading, .ai-loading')) return false;
   const aiAskInput = document.querySelector('.aiask-textarea');
@@ -1593,12 +1593,22 @@ If the word does not exist or is invalid, return: []`;
   }
 };
 
+// Yield between expensive backup/restore phases so Safari/iOS can repaint
+// button progress and keep touch/scroll input responsive.
+const yieldForUI = () => new Promise(resolve => {
+  if (document.hidden || typeof requestAnimationFrame !== 'function') setTimeout(resolve, 0);
+  else requestAnimationFrame(() => setTimeout(resolve, 0));
+});
+
 // ===== GOOGLE DRIVE SYNC =====
 const GDrive = {
   _token: null,
   _email: null,
   _client: null,
   _clientKey: '',
+  _gisPromise: null,
+  _tokenRequestPromise: null,
+  _profilePromise: null,
   _streakSyncTimer: null,
   _streakSyncPromise: null,
   STUDY_STREAK_FILE: 'vocab_study_streak.json',
@@ -1622,23 +1632,39 @@ const GDrive = {
   },
 
   _loadGIS() {
-    return new Promise((resolve, reject) => {
-      if (window.google?.accounts?.oauth2) { resolve(); return; }
+    if (window.google?.accounts?.oauth2) return Promise.resolve();
+    if (this._gisPromise) return this._gisPromise;
+
+    this._gisPromise = new Promise((resolve, reject) => {
+      const finish = () => {
+        if (window.google?.accounts?.oauth2) resolve();
+        else reject(new Error('GIS_LOAD_FAILED'));
+      };
       const existing = document.querySelector('script[data-gis="1"]');
       if (existing) {
-        existing.addEventListener('load', () => resolve(), { once: true });
+        existing.addEventListener('load', finish, { once: true });
         existing.addEventListener('error', () => reject(new Error('GIS_LOAD_FAILED')), { once: true });
         return;
       }
-      const s = document.createElement('script');
-      s.src = 'https://accounts.google.com/gsi/client';
-      s.async = true;
-      s.defer = true;
-      s.dataset.gis = '1';
-      s.onload = resolve;
-      s.onerror = () => reject(new Error('GIS_LOAD_FAILED'));
-      document.head.appendChild(s);
+      const script = document.createElement('script');
+      script.src = 'https://accounts.google.com/gsi/client';
+      script.async = true;
+      script.defer = true;
+      script.dataset.gis = '1';
+      script.onload = finish;
+      script.onerror = () => reject(new Error('GIS_LOAD_FAILED'));
+      document.head.appendChild(script);
+    }).catch(error => {
+      this._gisPromise = null;
+      throw error;
     });
+
+    return this._gisPromise;
+  },
+
+  preloadGIS() {
+    if (!DB.getGDriveClientId() || !navigator.onLine) return;
+    void this._loadGIS().catch(error => console.info('[GDrive] GIS preload skipped:', error.message));
   },
 
   _sessionClientId() { return AppStorage.getItem(this.SESSION_KEYS.clientId) || ''; },
@@ -1660,6 +1686,28 @@ const GDrive = {
     AppStorage.setItem(this.SESSION_KEYS.clientId, clientId || DB.getGDriveClientId());
     AppStorage.setItem(this.SESSION_KEYS.scope, this.SCOPE);
     AppStorage.setItem(this.SESSION_KEYS.lastLogin, new Date().toISOString());
+  },
+
+  refreshUserEmail(token = this._token) {
+    if (!token) return Promise.resolve(this.getUserEmail());
+    if (this._profilePromise) return this._profilePromise;
+    this._profilePromise = fetch('https://www.googleapis.com/oauth2/v1/userinfo', {
+      headers: { Authorization: 'Bearer ' + token }
+    })
+      .then(response => response.ok ? response.json() : null)
+      .then(info => {
+        // Ignore a late profile response if another token has already replaced it.
+        if (token !== this._token) return this.getUserEmail();
+        const email = String(info?.email || '').trim();
+        if (email) {
+          this._email = email;
+          AppStorage.setItem(this.SESSION_KEYS.email, email);
+        }
+        return this.getUserEmail();
+      })
+      .catch(() => this.getUserEmail())
+      .finally(() => { this._profilePromise = null; });
+    return this._profilePromise;
   },
 
   _clearTokenOnly() {
@@ -1707,40 +1755,45 @@ const GDrive = {
   },
 
   async _requestToken({ promptMode = '', accountHint = '' } = {}) {
-    const clientId = DB.getGDriveClientId();
-    if (!clientId) throw new Error('NO_CLIENT_ID');
-    const client = await this._getClient(clientId);
-    const hint = accountHint || this.getUserEmail();
-    return new Promise((resolve, reject) => {
-      let settled = false;
-      const fail = (err) => {
-        if (settled) return;
-        settled = true;
-        reject(err instanceof Error ? err : new Error(String(err || 'AUTH_FAILED')));
-      };
-      client.callback = async (resp) => {
-        if (settled) return;
-        if (resp.error) { fail(new Error(resp.error)); return; }
-        let email = this.getUserEmail();
-        try {
-          const r = await fetch('https://www.googleapis.com/oauth2/v1/userinfo', {
-            headers: { Authorization: 'Bearer ' + resp.access_token }
-          });
-          const info = await r.json();
-          email = info.email || email;
-        } catch {}
-        settled = true;
-        this._saveSession(resp.access_token, email, resp.expires_in, clientId);
-        resolve();
-      };
-      client.error_callback = (e) => fail(new Error(e?.type || e?.message || 'AUTH_FAILED'));
-      const req = { prompt: promptMode };
-      if (hint) {
-        req.hint = hint;
-        req.login_hint = hint;
-      }
-      client.requestAccessToken(req);
-    });
+    // Google TokenClient uses mutable callbacks. Share a single in-flight request
+    // so startup refresh and a user action cannot overwrite each other's callback.
+    if (this._tokenRequestPromise) return this._tokenRequestPromise;
+
+    this._tokenRequestPromise = (async () => {
+      const clientId = DB.getGDriveClientId();
+      if (!clientId) throw new Error('NO_CLIENT_ID');
+      const client = await this._getClient(clientId);
+      const hint = accountHint || this.getUserEmail();
+      return new Promise((resolve, reject) => {
+        let settled = false;
+        const fail = (err) => {
+          if (settled) return;
+          settled = true;
+          reject(err instanceof Error ? err : new Error(String(err || 'AUTH_FAILED')));
+        };
+        client.callback = (resp) => {
+          if (settled) return;
+          if (resp.error) { fail(new Error(resp.error)); return; }
+          settled = true;
+
+          // Do not hold up sign-in for the extra userinfo HTTP request. Persist the
+          // access token immediately; refresh the e-mail label in the background.
+          this._saveSession(resp.access_token, this.getUserEmail(), resp.expires_in, clientId);
+          void this.refreshUserEmail(resp.access_token);
+          resolve(resp);
+        };
+        client.error_callback = (e) => fail(new Error(e?.type || e?.message || 'AUTH_FAILED'));
+        const req = { prompt: promptMode };
+        if (hint) {
+          req.hint = hint;
+          req.login_hint = hint;
+        }
+        client.requestAccessToken(req);
+      });
+    })();
+
+    try { return await this._tokenRequestPromise; }
+    finally { this._tokenRequestPromise = null; }
   },
 
   async silentRefresh() {
@@ -1748,7 +1801,16 @@ const GDrive = {
   },
 
   async signIn() {
-    await this._requestToken({ promptMode: 'consent select_account' });
+    if (this.isSignedIn() || this.tryRestoreFromStorage()) return;
+    const remembered = this.getUserEmail();
+    try {
+      // Previously granted scopes do not need forced consent on every sign-in.
+      await this._requestToken({ promptMode: remembered ? '' : 'select_account', accountHint: remembered });
+    } catch (error) {
+      // If a simultaneous startup silent refresh failed, retry from this explicit
+      // user gesture with an interactive account/consent flow.
+      await this._requestToken({ promptMode: remembered ? 'select_account' : 'consent select_account', accountHint: remembered });
+    }
   },
 
   async reconnect() {
@@ -1765,9 +1827,11 @@ const GDrive = {
     } catch (e) {
       this._clearTokenOnly();
       if (!interactive) throw new Error('TOKEN_EXPIRED');
-      // Safari / iOS PWA often blocks silent OAuth after the app is closed.
-      // Because this path is triggered by a user click, we can safely show the Google consent/account UI.
-      await this._requestToken({ promptMode: this.getUserEmail() ? 'consent' : 'consent select_account' });
+      // Safari / iOS PWA may require a user gesture after a full app close.
+      await this._requestToken({
+        promptMode: this.getUserEmail() ? 'select_account' : 'consent select_account',
+        accountHint: this.getUserEmail()
+      });
     }
   },
 
@@ -1792,6 +1856,8 @@ const GDrive = {
     }
     this._client = null;
     this._clientKey = '';
+    this._tokenRequestPromise = null;
+    this._profilePromise = null;
     clearTimeout(this._streakSyncTimer);
     this._streakSyncTimer = null;
     this._clearSession();
@@ -1821,6 +1887,18 @@ const GDrive = {
       deviceId: this._getDeviceId(),
       revision: Date.now()
     });
+  },
+
+  _buildRecoveryPayload() {
+    // Local recovery points live in this app's own IndexedDB. They do not need
+    // the expensive cloud checksum pass; keeping schemaVersion=8 preserves all
+    // collections, including studyDays, when the snapshot is restored.
+    return {
+      ...this._buildCollections(),
+      schemaVersion: 8,
+      appVersion: APP_DISPLAY_VERSION,
+      updatedAt: new Date().toISOString()
+    };
   },
 
   _countPayloadItems(data = {}) {
@@ -1922,16 +2000,16 @@ const GDrive = {
   },
 
   async _readStudyStreakFiles(files) {
-    const days = [];
-    for (const file of files) {
+    const results = await Promise.all((files || []).map(async file => {
       try {
         const payload = await this._downloadStudyStreakFile(file.id);
-        days.push(...payload.studyDays);
+        return payload.studyDays || [];
       } catch (error) {
         console.warn('[GDrive] Ignored unreadable streak file.', file.id, error.message);
+        return [];
       }
-    }
-    return mergeStudyDays(days);
+    }));
+    return mergeStudyDays(results.flat());
   },
 
   async syncStudyStreak(options = {}) {
@@ -1987,30 +2065,55 @@ const GDrive = {
   },
 
   async upload(options = {}) {
+    const progress = typeof options.onProgress === 'function' ? options.onProgress : () => {};
+    clearTimeout(this._streakSyncTimer);
+    this._streakSyncTimer = null;
+
+    progress('正在確認 Google 登入…');
     await this.ensureToken(options);
-    await this.syncStudyStreak(options);
-    const data     = this._buildPayload();
+    await yieldForUI();
+
+    progress('正在準備備份資料…');
+    await yieldForUI();
+    const data = this._buildPayload();
+    await yieldForUI();
+
     const folderId = DB.getGDriveFolderId();
-    const ts       = new Date().toISOString().replace(/[:.]/g, '-');
+    const ts = new Date().toISOString().replace(/[:.]/g, '-');
     const fileName = 'vocab_backup_' + ts + '.json';
     const boundary = 'vocab_boundary_' + Date.now();
-    const dataCounts = this._countPayloadItems(data);
-    const summary  = {
-      words:     dataCounts.words,
+    const dataCounts = data.collectionCounts || this._countPayloadItems(data);
+    const summary = {
+      words: dataCounts.words,
       sentences: dataCounts.examples,
-      stats:     dataCounts.practice,
-      boosted:   dataCounts.boosted,
-      reading:   dataCounts.reading,
-      essay:     dataCounts.essay,
-      aiAsk:     dataCounts.aiAsk,
+      stats: dataCounts.practice,
+      boosted: dataCounts.boosted,
+      reading: dataCounts.reading,
+      essay: dataCounts.essay,
+      aiAsk: dataCounts.aiAsk,
       studyDays: dataCounts.studyDays,
-      total:     dataCounts.total,
-      version:   APP_DISPLAY_VERSION
+      total: dataCounts.total,
+      version: APP_DISPLAY_VERSION
     };
-    const metadata = { name: fileName, mimeType: 'application/json', description: JSON.stringify(summary), ...(folderId ? { parents: [folderId] } : {}) };
-    const body = '--' + boundary + '\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n'
-      + JSON.stringify(metadata) + '\r\n--' + boundary + '\r\nContent-Type: application/json\r\n\r\n'
-      + JSON.stringify(data) + '\r\n--' + boundary + '--';
+    const metadata = {
+      name: fileName,
+      mimeType: 'application/json',
+      description: JSON.stringify(summary),
+      ...(folderId ? { parents: [folderId] } : {})
+    };
+
+    progress('正在建立上傳檔案…');
+    await yieldForUI();
+    const json = JSON.stringify(data);
+    const prefix = '--' + boundary + '\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n'
+      + JSON.stringify(metadata) + '\r\n--' + boundary + '\r\nContent-Type: application/json\r\n\r\n';
+    const suffix = '\r\n--' + boundary + '--';
+    // Blob keeps the multipart pieces separate and avoids constructing another
+    // giant concatenated JavaScript string for large backups.
+    const body = new Blob([prefix, json, suffix], { type: 'multipart/related; boundary=' + boundary });
+    await yieldForUI();
+
+    progress('正在上傳 Google Drive…');
     const r = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart', {
       method: 'POST',
       headers: { Authorization: 'Bearer ' + this._token, 'Content-Type': 'multipart/related; boundary=' + boundary },
@@ -2023,11 +2126,19 @@ const GDrive = {
     }
     const now = new Date().toLocaleString('zh-TW');
     DB.setGDriveLastSync(now);
+
+    // The full backup already contains current local studyDays. Cross-device
+    // streak reconciliation is useful but no longer blocks the backup upload.
+    this.scheduleStudyStreakSync(900);
+    progress('完成');
     return now;
   },
 
   async listBackups(options = {}) {
+    const progress = typeof options.onProgress === 'function' ? options.onProgress : () => {};
+    progress('正在確認 Google 登入…');
     await this.ensureToken(options);
+    progress('正在讀取備份清單…');
     const folderId = DB.getGDriveFolderId();
     let q = "name contains 'vocab_backup_' and mimeType='application/json' and trashed=false";
     if (folderId) q += " and '" + folderId + "' in parents";
@@ -2044,15 +2155,20 @@ const GDrive = {
   },
 
   async downloadFile(fileId, options = {}) {
+    const progress = typeof options.onProgress === 'function' ? options.onProgress : () => {};
+    progress('正在確認 Google 登入…');
     await this.ensureToken(options);
-    const r = await fetch('https://www.googleapis.com/drive/v3/files/' + fileId + '?alt=media', {
+    progress('正在下載備份…');
+    const r = await fetch('https://www.googleapis.com/drive/v3/files/' + encodeURIComponent(fileId) + '?alt=media', {
       headers: { Authorization: 'Bearer ' + this._token }
     });
     if (!r.ok) {
       if (r.status === 401) { this._clearTokenOnly(); throw new Error('TOKEN_EXPIRED'); }
       throw new Error('DOWNLOAD_FAILED: ' + r.status);
     }
+    progress('正在驗證備份…');
     const data = await r.json();
+    await yieldForUI();
     const validation = BackupSchema.validate(data);
     if (!validation.valid) throw new Error('BACKUP_INVALID_' + validation.reason);
     return data;
@@ -2081,77 +2197,135 @@ const GDrive = {
       return { status: 'safety_blocked', ...comparison, file: latestFile };
     }
 
-    await AppStorage.createRecoverySnapshot(localPayload, 'before-auto-cloud-restore');
-    const syncedAt = this.applyDownload(cloudData, 'overwrite', { skipSnapshot: true });
+    await AppStorage.createRecoverySnapshot(this._buildRecoveryPayload(), 'before-auto-cloud-restore');
+    const syncedAt = await this.applyDownload(cloudData, 'overwrite', { skipSnapshot: true, prevalidated: true });
     return { status: 'restored', syncedAt, ...comparison, file: latestFile };
   },
 
-  applyDownload(data, mode, options = {}) {
-    const validation = BackupSchema.validate(data);
+  async applyDownload(data, mode, options = {}) {
+    const progress = typeof options.onProgress === 'function' ? options.onProgress : () => {};
+    progress('正在驗證備份…');
+    await yieldForUI();
+
+    const validation = options.prevalidated
+      ? { valid: true, collections: BackupSchema.normalize(data), sourceSchemaVersion: Number(data?.schemaVersion) || 0 }
+      : BackupSchema.validate(data);
     if (!validation.valid) throw new Error('BACKUP_INVALID_' + validation.reason);
-    const normalized = validation.collections;
+
     if (!options.skipSnapshot) {
-      AppStorage.createRecoverySnapshot(this._buildPayload(), 'before-manual-cloud-restore').catch(() => {});
+      progress('正在建立本機復原點…');
+      await AppStorage.createRecoverySnapshot(this._buildRecoveryPayload(), 'before-manual-cloud-restore');
+      await yieldForUI();
     }
-    data = normalized;
+
+    const incoming = validation.collections;
+    const writes = {};
+    progress(mode === 'overwrite' ? '正在寫入備份資料…' : '正在合併備份資料…');
+    await yieldForUI();
+
     if (mode === 'overwrite') {
-      if (Array.isArray(data.words))        AppStorage.setItem('vocabWords',        JSON.stringify(data.words));
-      if (Array.isArray(data.history))      AppStorage.setItem('practiceHistory',   JSON.stringify(data.history));
-      if (Array.isArray(data.sentences))    AppStorage.setItem('sentenceLog',       JSON.stringify(data.sentences));
-      if (Array.isArray(data.imported))     AppStorage.setItem('importedSentences', JSON.stringify(data.imported));
-      if (Array.isArray(data.boosted))      AppStorage.setItem('boostedWords',      JSON.stringify(data.boosted));
-      if (Array.isArray(data.readingQuizHistory)) AppStorage.setItem('readingQuizHistory', JSON.stringify(data.readingQuizHistory));
-      if (Array.isArray(data.essayHistory)) AppStorage.setItem('essayHistory',      JSON.stringify(data.essayHistory));
-      if (Array.isArray(data.aiAskHistory)) AppStorage.setItem('aiAskHistory',      JSON.stringify(data.aiAskHistory));
-      if (validation.sourceSchemaVersion >= 8) {
-        StudyStreak.replace(data.studyDays || [], { markPending: true });
-      }
+      writes.vocabWords = JSON.stringify(incoming.words || []);
+      writes.practiceHistory = JSON.stringify(incoming.history || []);
+      await yieldForUI();
+      writes.sentenceLog = JSON.stringify(incoming.sentences || []);
+      writes.importedSentences = JSON.stringify(incoming.imported || []);
+      writes.boostedWords = JSON.stringify(incoming.boosted || []);
+      await yieldForUI();
+      writes.readingQuizHistory = JSON.stringify(incoming.readingQuizHistory || []);
+      writes.essayHistory = JSON.stringify(incoming.essayHistory || []);
+      writes.aiAskHistory = JSON.stringify(incoming.aiAskHistory || []);
     } else {
-      const lw = DB.getWords(); const cw = data.words || [];
-      const merged = [...lw]; cw.forEach(w => { const key = String(w.english || w.wordEn || '').toLowerCase(); if (key && !merged.find(x => String(x.english || x.wordEn || '').toLowerCase() === key)) merged.push(w); });
-      AppStorage.setItem('vocabWords', JSON.stringify(merged));
-      const lh = DB.getHistory(); const ch = data.history || []; const hm = {};
-      [...lh, ...ch].forEach(h => { if (!hm[h.date] || h.total > hm[h.date].total) hm[h.date] = h; });
-      AppStorage.setItem('practiceHistory', JSON.stringify(Object.values(hm)));
-      const ls = DB.getSentenceLog(); const cs = data.sentences || [];
-      const ss = new Set(ls.map(s => s.word + s.date));
-      AppStorage.setItem('sentenceLog', JSON.stringify([...ls, ...cs.filter(s => !ss.has(s.word + s.date))]));
-      const li = DB.getImportedSentences(); const ci = data.imported || [];
-      const iss = new Set(li.map(s => s.word + s.english));
-      AppStorage.setItem('importedSentences', JSON.stringify([...li, ...ci.filter(s => !iss.has(s.word + s.english))]));
-      const lb = new Set(DB.getBoostedWords()); (data.boosted || []).forEach(id => lb.add(id));
-      AppStorage.setItem('boostedWords', JSON.stringify([...lb]));
-      if (Array.isArray(data.readingQuizHistory)) {
-        const lr = DB.getReadingQuizHistory(); const rm = {};
-        [...lr, ...data.readingQuizHistory].forEach(h => {
-          if (!rm[h.date]) { rm[h.date] = { ...h, sessions: [...(h.sessions||[])] }; }
-          else { const ex = new Set((rm[h.date].sessions||[]).map(s => String(s.ts || s.id || ''))); (h.sessions||[]).forEach(s => { const key = String(s.ts || s.id || ''); if (!ex.has(key)) { rm[h.date].sessions.push(s); ex.add(key); } }); }
+      const localWords = DB.getWords();
+      const wordKeys = new Set(localWords.map(w => String(w.english || w.wordEn || '').toLowerCase()).filter(Boolean));
+      const mergedWords = [...localWords];
+      for (const word of incoming.words || []) {
+        const key = String(word.english || word.wordEn || '').toLowerCase();
+        if (key && !wordKeys.has(key)) { wordKeys.add(key); mergedWords.push(word); }
+      }
+      writes.vocabWords = JSON.stringify(mergedWords);
+      await yieldForUI();
+
+      const historyMap = {};
+      [...DB.getHistory(), ...(incoming.history || [])].forEach(h => {
+        if (!historyMap[h.date] || h.total > historyMap[h.date].total) historyMap[h.date] = h;
+      });
+      writes.practiceHistory = JSON.stringify(Object.values(historyMap));
+
+      const localSentences = DB.getSentenceLog();
+      const sentenceKeys = new Set(localSentences.map(item => item.word + item.date));
+      const mergedSentences = [...localSentences];
+      for (const item of incoming.sentences || []) {
+        const key = item.word + item.date;
+        if (!sentenceKeys.has(key)) { sentenceKeys.add(key); mergedSentences.push(item); }
+      }
+      writes.sentenceLog = JSON.stringify(mergedSentences);
+
+      const localImported = DB.getImportedSentences();
+      const importedKeys = new Set(localImported.map(item => item.word + item.english));
+      const mergedImported = [...localImported];
+      for (const item of incoming.imported || []) {
+        const key = item.word + item.english;
+        if (!importedKeys.has(key)) { importedKeys.add(key); mergedImported.push(item); }
+      }
+      writes.importedSentences = JSON.stringify(mergedImported);
+      writes.boostedWords = JSON.stringify([...new Set([...DB.getBoostedWords(), ...(incoming.boosted || [])])]);
+      await yieldForUI();
+
+      if (Array.isArray(incoming.readingQuizHistory)) {
+        const readingMap = {};
+        [...DB.getReadingQuizHistory(), ...incoming.readingQuizHistory].forEach(group => {
+          if (!readingMap[group.date]) readingMap[group.date] = { ...group, sessions: [...(group.sessions || [])] };
+          else {
+            const existing = new Set((readingMap[group.date].sessions || []).map(session => String(session.ts || session.id || '')));
+            for (const session of group.sessions || []) {
+              const key = String(session.ts || session.id || '');
+              if (!existing.has(key)) { readingMap[group.date].sessions.push(session); existing.add(key); }
+            }
+          }
         });
-        AppStorage.setItem('readingQuizHistory', JSON.stringify(Object.values(rm)));
+        writes.readingQuizHistory = JSON.stringify(Object.values(readingMap));
       }
-      if (Array.isArray(data.essayHistory)) {
-        const le = DB.getEssayHistory(); const em = {};
-        [...le, ...data.essayHistory].forEach(h => {
-          if (!em[h.date]) { em[h.date] = { ...h, sessions: [...(h.sessions||[])] }; }
-          else { const ex = new Set((em[h.date].sessions||[]).map(s => s.ts)); (h.sessions||[]).forEach(s => { if (!ex.has(s.ts)) { em[h.date].sessions.push(s); ex.add(s.ts); } }); }
+
+      if (Array.isArray(incoming.essayHistory)) {
+        const essayMap = {};
+        [...DB.getEssayHistory(), ...incoming.essayHistory].forEach(group => {
+          if (!essayMap[group.date]) essayMap[group.date] = { ...group, sessions: [...(group.sessions || [])] };
+          else {
+            const existing = new Set((essayMap[group.date].sessions || []).map(session => session.ts));
+            for (const session of group.sessions || []) {
+              if (!existing.has(session.ts)) { essayMap[group.date].sessions.push(session); existing.add(session.ts); }
+            }
+          }
         });
-        AppStorage.setItem('essayHistory', JSON.stringify(Object.values(em)));
+        writes.essayHistory = JSON.stringify(Object.values(essayMap));
       }
-      if (Array.isArray(data.aiAskHistory)) {
-        const la = DB.getAiAskHistory(); const as = new Set(la.map(e => e.id));
-        AppStorage.setItem('aiAskHistory', JSON.stringify([...la, ...data.aiAskHistory.filter(e => !as.has(e.id))]));
+
+      if (Array.isArray(incoming.aiAskHistory)) {
+        const localAi = DB.getAiAskHistory();
+        const ids = new Set(localAi.map(entry => entry.id));
+        writes.aiAskHistory = JSON.stringify([...localAi, ...incoming.aiAskHistory.filter(entry => !ids.has(entry.id))]);
       }
-      StudyStreak.merge(data.studyDays || [], { markPending: true });
     }
-    if (validation.sourceSchemaVersion < 8) {
+
+    await yieldForUI();
+    await AppStorage.setItemsBatch(writes);
+
+    if (validation.sourceSchemaVersion >= 8) {
+      if (mode === 'overwrite') StudyStreak.replace(incoming.studyDays || [], { markPending: true });
+      else StudyStreak.merge(incoming.studyDays || [], { markPending: true });
+    } else {
       StudyStreak.migrateFromHistories(getStudyHistorySources(), { markPending: true });
     }
+
+    await AppStorage.flush();
     const now = new Date().toLocaleString('zh-TW');
     DB.setGDriveLastSync(now);
     refreshStudyStreakUI();
-    this.scheduleStudyStreakSync(300);
+    this.scheduleStudyStreakSync(700);
+    progress('完成');
     return now;
   }
+
 };
 
 // ===== UTILITIES =====
@@ -5285,6 +5459,7 @@ Views.settings = {
     const sessionStatus = GDrive.getSessionStatus();
     const remembered  = sessionStatus === 'remembered';
     const email       = GDrive.getUserEmail();
+    const emailLabel  = email || 'Google 帳戶';
     const lastSync    = DB.getGDriveLastSync();
     const autoSync    = DB.getGDriveAutoSync();
     const versionState = AppUpdater.getState();
@@ -5341,7 +5516,7 @@ Views.settings = {
           ${(signedIn || remembered) ? `
             <div class="fb-status-row">
               <div class="fb-status-dot ${signedIn ? 'connected' : 'disconnected'}"></div>
-              <span class="fb-status-text">${signedIn ? '已登入' : '已記住帳號，待操作時自動續權'}：${escapeHTML(email)}</span>
+              <span class="fb-status-text">${signedIn ? '已登入' : '已記住帳號，待操作時自動續權'}：${escapeHTML(emailLabel)}</span>
             </div>
             ${lastSync ? '<div class="fb-last-sync" style="margin-bottom:10px">上次同步：' + lastSync + '</div>' : ''}
             <div class="settings-btn-row" style="margin-bottom:10px">
@@ -5363,7 +5538,7 @@ Views.settings = {
             ${remembered ? '<div class="settings-tip" style="margin-top:8px">iOS PWA 關閉後可能需要 Google 再確認一次授權；本程式會保留帳號並在上傳/還原時自動續權，不會清空登入設定。</div>' : ''}
             <button class="btn-fb-signout-bottom" id="gd-signout-btn" style="margin-top:10px">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:15px;height:15px"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
-              登出 Google（${escapeHTML(email)}）
+              登出 Google（${escapeHTML(emailLabel)}）
             </button>
           ` : `
             <div class="fb-status-row" style="margin-bottom:8px">
@@ -6127,15 +6302,15 @@ Views.settings = {
       btn.disabled = true; btn.textContent = '登入中…';
       try {
         await GDrive.signIn();
-        try {
-          await GDrive.syncStudyStreak({ interactive: true });
-          showToast('✓ 已登入並同步練習天數：' + GDrive.getUserEmail());
-        } catch (syncError) {
-          StudyStreak.markPending();
-          console.warn('[GDrive] Initial study streak sync failed.', syncError.message);
-          showToast('已登入；練習天數稍後再同步', 3200);
-        }
+        showToast('✓ Google 登入完成；雲端同步將在背景執行', 3000);
         this.render(container);
+
+        // Do not make the user wait for profile lookup or the multi-request
+        // cross-device streak verification. Both are safe background work.
+        void GDrive.refreshUserEmail().finally(() => {
+          if (Router.currentView === 'settings') this.render(container);
+        });
+        GDrive.scheduleStudyStreakSync(500);
       } catch(err) {
         let msg = '登入失敗，請稍後再試';
         if (err.message === 'NO_CLIENT_ID')    msg = '請先填入並儲存 OAuth Client ID';
@@ -6173,25 +6348,34 @@ Views.settings = {
     // ── 上傳備份 ──
     document.getElementById('gd-upload-btn')?.addEventListener('click', async () => {
       const btn = document.getElementById('gd-upload-btn');
+      const original = btn?.innerHTML || '';
       if (btn) btn.disabled = true;
       try {
-        const ts = await GDrive.upload({ interactive: true });
+        const ts = await GDrive.upload({
+          interactive: true,
+          onProgress: message => { if (btn?.isConnected) btn.textContent = message; }
+        });
         showToast('✓ 備份已上傳至 Google Drive（' + ts + '）');
         this.render(container);
       } catch(err) {
         if (err.message === 'NOT_SIGNED_IN')  showToast('請先登入 Google', 3000);
         else if (err.message === 'TOKEN_EXPIRED') { showToast('需要 Google 重新確認授權，請再按一次操作', 3500); this.render(container); }
         else showToast('上傳失敗：' + err.message, 3000);
+      } finally {
+        if (btn?.isConnected) { btn.disabled = false; btn.innerHTML = original; }
       }
-      if (btn) btn.disabled = false;
     });
 
     // ── 還原備份（選擇 10 個檔案之一） ──
     document.getElementById('gd-download-btn')?.addEventListener('click', async () => {
       const btn = document.getElementById('gd-download-btn');
       if (btn) btn.disabled = true;
+      const original = btn?.innerHTML || '';
       try {
-        const files = await GDrive.listBackups({ interactive: true });
+        const files = await GDrive.listBackups({
+          interactive: true,
+          onProgress: message => { if (btn?.isConnected) btn.textContent = message; }
+        });
         if (!files.length) { showToast('雲端尚無備份，請先上傳', 3000); if (btn) btn.disabled=false; return; }
         const rows = files.map((f, i) => {
           const ts  = f.createdTime ? new Date(f.createdTime).toLocaleString('zh-TW') : '—';
@@ -6221,9 +6405,13 @@ Views.settings = {
         document.querySelectorAll('.fb-slot-btn').forEach(b => {
           b.addEventListener('click', async () => {
             const fileId = b.dataset.fid;
+            const originalLabel = b.innerHTML;
             document.querySelectorAll('.fb-slot-btn').forEach(x => x.disabled = true);
             try {
-              const data = await GDrive.downloadFile(fileId, { interactive: true });
+              const data = await GDrive.downloadFile(fileId, {
+                interactive: true,
+                onProgress: message => { if (b.isConnected) b.textContent = message; }
+              });
               Modal.show(`<div class="modal-handle"></div>
                 <div class="modal-title">套用備份</div>
                 <p style="font-size:13px;color:var(--text-muted);margin-bottom:14px">
@@ -6235,11 +6423,28 @@ Views.settings = {
                   <button class="btn-secondary" id="gd-dl-merge" style="width:100%">合併（保留本機 + 備份全部）</button>
                   <button class="modal-btn-cancel" id="gd-dl-cancel2" style="width:100%;margin-top:4px">取消</button>
                 </div>`);
-              const apply = (mode) => { GDrive.applyDownload(data, mode); Modal.hide(); showToast('✓ 備份已還原至本機'); this.render(container); };
-              document.getElementById('gd-dl-overwrite').addEventListener('click', () => apply('overwrite'));
-              document.getElementById('gd-dl-merge').addEventListener('click',     () => apply('merge'));
-              document.getElementById('gd-dl-cancel2').addEventListener('click',   () => Modal.hide());
+
+              const apply = async (mode, actionButton) => {
+                const buttons = [...document.querySelectorAll('#gd-dl-overwrite,#gd-dl-merge,#gd-dl-cancel2')];
+                buttons.forEach(button => button.disabled = true);
+                try {
+                  await GDrive.applyDownload(data, mode, {
+                    prevalidated: true,
+                    onProgress: message => { if (actionButton?.isConnected) actionButton.textContent = message; }
+                  });
+                  Modal.hide();
+                  showToast('✓ 備份已還原至本機');
+                  this.render(container);
+                } catch (error) {
+                  showToast('還原失敗：' + error.message, 3500);
+                  buttons.forEach(button => button.disabled = false);
+                }
+              };
+              document.getElementById('gd-dl-overwrite').addEventListener('click', event => void apply('overwrite', event.currentTarget));
+              document.getElementById('gd-dl-merge').addEventListener('click', event => void apply('merge', event.currentTarget));
+              document.getElementById('gd-dl-cancel2').addEventListener('click', () => Modal.hide());
             } catch(err) {
+              if (b.isConnected) b.innerHTML = originalLabel;
               if (err.message === 'TOKEN_EXPIRED') { Modal.hide(); showToast('需要 Google 重新確認授權，請再按一次操作', 3500); this.render(container); }
               else { showToast('下載失敗：' + err.message, 3000); Modal.hide(); }
             }
@@ -6250,7 +6455,7 @@ Views.settings = {
         else if (err.message === 'TOKEN_EXPIRED') { showToast('需要 Google 重新確認授權，請再按一次操作', 3500); this.render(container); }
         else showToast('讀取失敗：' + err.message, 3000);
       }
-      if (btn) btn.disabled = false;
+      if (btn?.isConnected) { btn.disabled = false; btn.innerHTML = original; }
     });
 
     // ── 自動同步開關 ──
@@ -6277,13 +6482,23 @@ Views.settings = {
         <button class="modal-btn-cancel" id="recovery-close" style="width:100%;margin-top:10px">取消</button>`);
       document.getElementById('recovery-close')?.addEventListener('click', () => Modal.hide());
       document.querySelectorAll('.local-recovery-item').forEach(button => {
-        button.addEventListener('click', () => {
+        button.addEventListener('click', async () => {
           const item = snapshots.find(snapshot => snapshot.id === button.dataset.snapshotId);
           if (!item) return;
-          GDrive.applyDownload(item.payload, 'overwrite');
-          Modal.hide();
-          showToast('✓ 已還原本機復原點');
-          this.render(container);
+          const originalLabel = button.innerHTML;
+          document.querySelectorAll('.local-recovery-item').forEach(itemButton => itemButton.disabled = true);
+          try {
+            await GDrive.applyDownload(item.payload, 'overwrite', {
+              onProgress: message => { if (button.isConnected) button.textContent = message; }
+            });
+            Modal.hide();
+            showToast('✓ 已還原本機復原點');
+            this.render(container);
+          } catch (error) {
+            if (button.isConnected) button.innerHTML = originalLabel;
+            document.querySelectorAll('.local-recovery-item').forEach(itemButton => itemButton.disabled = false);
+            showToast('還原失敗：' + error.message, 3500);
+          }
         });
       });
     });
@@ -6348,38 +6563,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     btn.addEventListener('click', () => Router.navigate(btn.dataset.view));
   });
 
-  // ── Google Drive: restore token + auto-sync on startup ──
-  try {
-    const restored = await GDrive.tryRestoreToken();
-    if (restored) {
-      try { await GDrive.syncStudyStreak({ interactive: false }); }
-      catch (error) {
-        StudyStreak.markPending();
-        console.warn('[GDrive] Startup study streak sync deferred.', error.message);
-      }
-    }
-    if (restored && DB.getGDriveAutoSync()) {
-      showToast('☁️ 檢查雲端備份中…', 1800);
-      try {
-        const syncResult = await GDrive.autoRestoreIfCloudHasMore();
-        if (syncResult.status === 'restored') {
-          showToast('✓ 已自動同步雲端最新備份', 2800);
-        } else if (syncResult.status === 'conflict') {
-          console.warn('[GDrive] Auto-sync conflict detected.', syncResult);
-          showToast('雲端與本機資料各有差異，為保護資料未自動覆寫', 3800);
-        } else if (syncResult.status === 'same') {
-          console.info('[GDrive] Local and cloud backup are identical.');
-        } else if (syncResult.status === 'safety_blocked') {
-          showToast('本機復原點無法使用，為保護資料未自動覆寫', 3600);
-        } else if (syncResult.status === 'skipped') {
-          console.info('[GDrive] Auto-sync skipped. Local:', GDrive._formatCounts(syncResult.localCounts), 'Cloud:', GDrive._formatCounts(syncResult.cloudCounts));
-          showToast('本機資料未少於雲端，不自動更新', 2600);
-        }
-      } catch(e) {
-        console.warn('Auto-sync check failed', e.message);
-      }
-    }
-  } catch(e) { console.warn('[GDrive] init failed:', e); }
+  // ── Google Drive startup ──
+  // Restore an existing session token synchronously from sessionStorage, but do
+  // not block first paint on GIS/OAuth or Drive network traffic.
+  GDrive.tryRestoreFromStorage();
 
   // ── Global quick-scroll FABs (all pages except active spelling / essay; bottom button is Settings + Reading quiz) ──
   const _backTopBtn = document.getElementById('global-back-top');
@@ -6421,6 +6608,50 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
 
   Router._doNavigate('home');
+
+  // Warm the Google Identity script after the UI is already usable. This removes
+  // most of the first-click GIS loading delay without delaying app startup.
+  setTimeout(() => GDrive.preloadGIS(), 0);
+
+  const bootstrapGDriveInBackground = async () => {
+    if (!navigator.onLine || !DB.getGDriveClientId()) return;
+    try {
+      let restored = GDrive.isSignedIn() || GDrive.tryRestoreFromStorage();
+      if (!restored && GDrive.hasRememberedSession()) restored = await GDrive.tryRestoreToken();
+      if (!restored) return;
+
+      if (DB.getGDriveAutoSync()) {
+        showToast('☁️ 背景檢查雲端備份中…', 1800);
+        try {
+          const syncResult = await GDrive.autoRestoreIfCloudHasMore();
+          if (syncResult.status === 'restored') {
+            showToast('✓ 已自動同步雲端最新備份', 2800);
+            if (!Router.quizActive && !Router.essayActive && ['home', 'settings'].includes(Router.currentView)) {
+              Router._doNavigate(Router.currentView);
+            }
+          } else if (syncResult.status === 'conflict') {
+            console.warn('[GDrive] Auto-sync conflict detected.', syncResult);
+            showToast('雲端與本機資料各有差異，為保護資料未自動覆寫', 3800);
+          } else if (syncResult.status === 'same') {
+            console.info('[GDrive] Local and cloud backup are identical.');
+          } else if (syncResult.status === 'safety_blocked') {
+            showToast('本機復原點無法使用，為保護資料未自動覆寫', 3600);
+          } else if (syncResult.status === 'skipped') {
+            console.info('[GDrive] Auto-sync skipped. Local:', GDrive._formatCounts(syncResult.localCounts), 'Cloud:', GDrive._formatCounts(syncResult.cloudCounts));
+          }
+        } catch (error) {
+          console.warn('[GDrive] Background auto-sync check failed:', error.message);
+        }
+      }
+
+      // Cross-device study streak verification can involve several Drive calls;
+      // keep it behind the startup/backup critical path.
+      GDrive.scheduleStudyStreakSync(700);
+    } catch (error) {
+      console.warn('[GDrive] Background startup init failed:', error.message);
+    }
+  };
+  setTimeout(() => { void bootstrapGDriveInBackground(); }, 180);
 
   // Check during idle time and never install/reload while an exercise is active.
   const checkForStartupUpdate = async () => {

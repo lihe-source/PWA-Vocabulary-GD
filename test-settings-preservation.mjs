@@ -15,7 +15,7 @@ test('current Worker, Pages, cron and D1 settings are retained', async () => {
   assert.match(wrangler, /APP_URL = "https:\/\/lihe-source\.github\.io\/PWA-Vocabulary-GD\/"/);
   assert.match(wrangler, /ALLOWED_ORIGINS = "https:\/\/lihe-source\.github\.io"/);
   assert.match(wrangler, /database_id = "8886068d-480d-45ca-af8b-2c679d0fc150"/);
-  assert.match(worker, /SERVICE_VERSION = 'V7\.2\.1'/);
+  assert.match(worker, /SERVICE_VERSION = 'V7\.2\.2'/);
 });
 
 test('the release directory is completely flat', async () => {

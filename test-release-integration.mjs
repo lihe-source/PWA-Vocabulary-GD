@@ -4,21 +4,21 @@ import { readFile } from 'node:fs/promises';
 
 const text = name => readFile(new URL(`./${name}`, import.meta.url), 'utf8');
 
-test('all public app surfaces use the V7.2.1 cache/version', async () => {
+test('all public app surfaces use the V7.2.2 cache/version', async () => {
   const [app, html, sw, version, manifest] = await Promise.all([
     text('app.js'), text('index.html'), text('sw.js'), text('version.json'), text('manifest.json')
   ]);
-  assert.match(app, /APP_VERSION = 'V7_2_1'/);
-  assert.match(html, /app\.js\?v=V7_2_1/);
-  assert.match(sw, /Voc-PWA-V7_2_1/);
-  assert.match(sw, /study-streak\.js\?v=V7_2_1/);
+  assert.match(app, /APP_VERSION = 'V7_2_2'/);
+  assert.match(html, /app\.js\?v=V7_2_2/);
+  assert.match(sw, /Voc-PWA-V7_2_2/);
+  assert.match(sw, /study-streak\.js\?v=V7_2_2/);
   assert.equal(JSON.parse(version).schemaVersion, 8);
-  assert.match(JSON.parse(manifest).name, /V7\.2\.1/);
+  assert.match(JSON.parse(manifest).name, /V7\.2\.2/);
 });
 
 test('study streak UI uses the green theme and a stable mobile settings layout', async () => {
   const [app, style] = await Promise.all([text('app.js'), text('style.css')]);
-  const streakSection = style.split('/* ===== V7.2.1 Study streak')[1]
+  const streakSection = style.split('/* ===== V7.2.2 Study streak')[1]
     ?.split('/* ===== V7.1.0')[0] || '';
 
   assert.match(streakSection, /margin:\s*12px/);
@@ -45,4 +45,27 @@ test('settings backup and Google Drive payload include study days', async () => 
   assert.match(app, /study_days_\$\{compactDateTag\}\.csv/);
   assert.match(app, /vocab_study_streak\.json/);
   assert.match(app, /gd-streak-sync-btn/);
+});
+
+
+test('Google Drive startup and backup work stay off the first-paint critical path', async () => {
+  const app = await text('app.js');
+  const homeRender = app.indexOf("Router._doNavigate('home')");
+  const backgroundBootstrap = app.indexOf('bootstrapGDriveInBackground');
+  assert.ok(homeRender >= 0 && backgroundBootstrap > homeRender);
+
+  const uploadStart = app.indexOf('async upload(options = {})');
+  const uploadEnd = app.indexOf('async listBackups(options = {})', uploadStart);
+  const uploadBody = app.slice(uploadStart, uploadEnd);
+  assert.doesNotMatch(uploadBody, /await\s+this\.syncStudyStreak/);
+  assert.match(uploadBody, /scheduleStudyStreakSync/);
+  assert.match(app, /preloadGIS\(\)/);
+});
+
+test('restore uses batched IndexedDB writes and visible UI yielding', async () => {
+  const [app, storage] = await Promise.all([text('app.js'), text('storage.js')]);
+  assert.match(app, /await AppStorage\.setItemsBatch\(writes\)/);
+  assert.match(app, /yieldForUI/);
+  assert.match(storage, /async setItemsBatch\(entries\)/);
+  assert.match(storage, /_putRecords\(entries\)/);
 });

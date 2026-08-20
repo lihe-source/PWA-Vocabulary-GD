@@ -1,4 +1,4 @@
-// Study streak domain logic for V7.2.1.
+// Study streak domain logic for V7.2.2.
 // The module is deliberately UI-independent so date math, migration and
 // cross-device union merges can be verified with Node tests.
 
