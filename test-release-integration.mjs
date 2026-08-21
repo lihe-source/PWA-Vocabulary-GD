@@ -4,21 +4,21 @@ import { readFile } from 'node:fs/promises';
 
 const text = name => readFile(new URL(`./${name}`, import.meta.url), 'utf8');
 
-test('all public app surfaces use the V7.2.2 cache/version', async () => {
+test('all public app surfaces use the V7.2.3 cache/version', async () => {
   const [app, html, sw, version, manifest] = await Promise.all([
     text('app.js'), text('index.html'), text('sw.js'), text('version.json'), text('manifest.json')
   ]);
-  assert.match(app, /APP_VERSION = 'V7_2_2'/);
-  assert.match(html, /app\.js\?v=V7_2_2/);
-  assert.match(sw, /Voc-PWA-V7_2_2/);
-  assert.match(sw, /study-streak\.js\?v=V7_2_2/);
+  assert.match(app, /APP_VERSION = 'V7_2_3'/);
+  assert.match(html, /app\.js\?v=V7_2_3/);
+  assert.match(sw, /Voc-PWA-V7_2_3/);
+  assert.match(sw, /study-streak\.js\?v=V7_2_3/);
   assert.equal(JSON.parse(version).schemaVersion, 8);
-  assert.match(JSON.parse(manifest).name, /V7\.2\.2/);
+  assert.match(JSON.parse(manifest).name, /V7\.2\.3/);
 });
 
 test('study streak UI uses the green theme and a stable mobile settings layout', async () => {
   const [app, style] = await Promise.all([text('app.js'), text('style.css')]);
-  const streakSection = style.split('/* ===== V7.2.2 Study streak')[1]
+  const streakSection = style.split('/* ===== V7.2.3 Study streak')[1]
     ?.split('/* ===== V7.1.0')[0] || '';
 
   assert.match(streakSection, /margin:\s*12px/);

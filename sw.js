@@ -1,19 +1,19 @@
 const CACHE_PREFIX = 'Voc-PWA-';
-const CACHE_NAME = 'Voc-PWA-V7_2_2';
+const CACHE_NAME = 'Voc-PWA-V7_2_3';
 const APP_SHELL = [
   './',
   './index.html',
-  './style.css?v=V7_2_2',
-  './app.js?v=V7_2_2',
-  './manifest.json?v=V7_2_2',
+  './style.css?v=V7_2_3',
+  './app.js?v=V7_2_3',
+  './manifest.json?v=V7_2_3',
   './version.json',
-  './storage.js?v=V7_2_2',
-  './backup-schema.js?v=V7_2_2',
-  './study-streak.js?v=V7_2_2',
-  './version-manager.js?v=V7_2_2',
-  './chart-renderer.js?v=V7_2_2',
-  './push-config.js?v=V7_2_2',
-  './reminder-manager.js?v=V7_2_2',
+  './storage.js?v=V7_2_3',
+  './backup-schema.js?v=V7_2_3',
+  './study-streak.js?v=V7_2_3',
+  './version-manager.js?v=V7_2_3',
+  './chart-renderer.js?v=V7_2_3',
+  './push-config.js?v=V7_2_3',
+  './reminder-manager.js?v=V7_2_3',
   './jszip.min.js?v=3_10_1',
   './icon-192.png',
   './icon-512.png'

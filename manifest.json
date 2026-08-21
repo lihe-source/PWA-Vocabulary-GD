@@ -1,8 +1,8 @@
 {
   "id": "./",
-  "name": "英文單字複習 V7.2.2",
+  "name": "英文單字複習 V7.2.3",
   "short_name": "英文複習",
-  "description": "支援跨裝置連續練習天數、每日推播提醒、Gemini AI、IndexedDB 與 Google Drive 備份的英文單字複習 PWA V7.2.2",
+  "description": "支援跨裝置連續練習天數、每日推播提醒、Gemini AI、IndexedDB 與 Google Drive 備份的英文單字複習 PWA V7.2.3",
   "start_url": "./index.html",
   "scope": "./",
   "display": "standalone",

@@ -1,19 +1,19 @@
-import { AppStorage } from './storage.js?v=V7_2_2';
-import { BackupSchema } from './backup-schema.js?v=V7_2_2';
-import { VersionManager } from './version-manager.js?v=V7_2_2';
-import { TrendChart } from './chart-renderer.js?v=V7_2_2';
-import { PUSH_CONFIG } from './push-config.js?v=V7_2_2';
-import { ReminderManager, reminderErrorMessage } from './reminder-manager.js?v=V7_2_2';
-import { StudyStreakManager, STUDY_ACTIVITY_TYPES, STUDY_DAYS_CSV_HEADER, mergeStudyDays } from './study-streak.js?v=V7_2_2';
+import { AppStorage } from './storage.js?v=V7_2_3';
+import { BackupSchema } from './backup-schema.js?v=V7_2_3';
+import { VersionManager } from './version-manager.js?v=V7_2_3';
+import { TrendChart } from './chart-renderer.js?v=V7_2_3';
+import { PUSH_CONFIG } from './push-config.js?v=V7_2_3';
+import { ReminderManager, reminderErrorMessage } from './reminder-manager.js?v=V7_2_3';
+import { StudyStreakManager, STUDY_ACTIVITY_TYPES, STUDY_DAYS_CSV_HEADER, mergeStudyDays } from './study-streak.js?v=V7_2_3';
 
 // ===========================
-// 英文單字複習 PWA - app.js V7_2_2
-// V7.2.2：統一練習天數綠色主題、修正設定頁行動裝置排版
+// 英文單字複習 PWA - app.js V7_2_3
+// V7.2.3：主畫面零阻塞、Google Drive 無打擾自動續登入與單一步驟授權
 // ===========================
 
-const APP_VERSION = 'V7_2_2';
-const APP_DISPLAY_VERSION = 'V7.2.2';
-const APP_CACHE_VERSION = 'Voc-PWA-V7_2_2';
+const APP_VERSION = 'V7_2_3';
+const APP_DISPLAY_VERSION = 'V7.2.3';
+const APP_CACHE_VERSION = 'Voc-PWA-V7_2_3';
 const canActivateAppUpdate = () => {
   if (document.querySelector('#quiz-ghost-input, .essay-textarea, .reading-quiz-shell, .reading-loading, .ai-loading')) return false;
   const aiAskInput = document.querySelector('.aiask-textarea');
@@ -1663,8 +1663,13 @@ const GDrive = {
   },
 
   preloadGIS() {
-    if (!DB.getGDriveClientId() || !navigator.onLine) return;
-    void this._loadGIS().catch(error => console.info('[GDrive] GIS preload skipped:', error.message));
+    if (!DB.getGDriveClientId() || !navigator.onLine) return Promise.resolve(false);
+    return this._loadGIS()
+      .then(() => true)
+      .catch(error => {
+        console.info('[GDrive] GIS preload skipped:', error.message);
+        return false;
+      });
   },
 
   _sessionClientId() { return AppStorage.getItem(this.SESSION_KEYS.clientId) || ''; },
@@ -1796,21 +1801,22 @@ const GDrive = {
     finally { this._tokenRequestPromise = null; }
   },
 
-  async silentRefresh() {
-    await this._requestToken({ promptMode: '' });
+  async silentRefresh({ noUi = false } = {}) {
+    // V7.2.3: prompt:'none' is used only for best-effort reconnects that must
+    // never interrupt the user with Google's account/consent dialog.
+    await this._requestToken({
+      promptMode: noUi ? 'none' : '',
+      accountHint: this.getUserEmail()
+    });
   },
 
   async signIn() {
     if (this.isSignedIn() || this.tryRestoreFromStorage()) return;
     const remembered = this.getUserEmail();
-    try {
-      // Previously granted scopes do not need forced consent on every sign-in.
-      await this._requestToken({ promptMode: remembered ? '' : 'select_account', accountHint: remembered });
-    } catch (error) {
-      // If a simultaneous startup silent refresh failed, retry from this explicit
-      // user gesture with an interactive account/consent flow.
-      await this._requestToken({ promptMode: remembered ? 'select_account' : 'consent select_account', accountHint: remembered });
-    }
+    // One user gesture, one Google flow. An empty prompt plus login_hint reuses
+    // an existing grant/account when possible and only shows Google UI when
+    // Google itself requires authentication or consent.
+    await this._requestToken({ promptMode: '', accountHint: remembered });
   },
 
   async reconnect() {
@@ -1821,33 +1827,31 @@ const GDrive = {
     const interactive = !!options.interactive;
     if (this.isSignedIn()) return;
     if (this.tryRestoreFromStorage()) return;
+
+    this._clearTokenOnly();
+    if (!interactive) throw new Error('TOKEN_EXPIRED');
+
+    // Drive actions are already initiated by a real tap/click. Reuse that same
+    // gesture instead of asking the user to press a separate Sign in button and
+    // then confirming a second account-selection prompt.
     try {
-      await this.silentRefresh();
-      return;
-    } catch (e) {
+      await this._requestToken({ promptMode: '', accountHint: this.getUserEmail() });
+    } catch (error) {
       this._clearTokenOnly();
-      if (!interactive) throw new Error('TOKEN_EXPIRED');
-      // Safari / iOS PWA may require a user gesture after a full app close.
-      await this._requestToken({
-        promptMode: this.getUserEmail() ? 'select_account' : 'consent select_account',
-        accountHint: this.getUserEmail()
-      });
+      throw error;
     }
   },
 
-  async tryRestoreToken() {
+  async tryRestoreToken({ noUi = true } = {}) {
     if (this.tryRestoreFromStorage()) return true;
-    if (!DB.getGDriveClientId()) return false;
-    if (this.getUserEmail()) {
-      try {
-        await this.silentRefresh();
-        return true;
-      } catch (e) {
-        this._clearTokenOnly();
-        return false;
-      }
+    if (!DB.getGDriveClientId() || !this.getUserEmail()) return false;
+    try {
+      await this.silentRefresh({ noUi });
+      return true;
+    } catch (e) {
+      this._clearTokenOnly();
+      return false;
     }
-    return false;
   },
 
   signOut() {
@@ -5516,7 +5520,7 @@ Views.settings = {
           ${(signedIn || remembered) ? `
             <div class="fb-status-row">
               <div class="fb-status-dot ${signedIn ? 'connected' : 'disconnected'}"></div>
-              <span class="fb-status-text">${signedIn ? '已登入' : '已記住帳號，待操作時自動續權'}：${escapeHTML(emailLabel)}</span>
+              <span class="fb-status-text">${signedIn ? '已登入' : '已記住帳號，背景自動續登入'}：${escapeHTML(emailLabel)}</span>
             </div>
             ${lastSync ? '<div class="fb-last-sync" style="margin-bottom:10px">上次同步：' + lastSync + '</div>' : ''}
             <div class="settings-btn-row" style="margin-bottom:10px">
@@ -5535,7 +5539,7 @@ Views.settings = {
               <button class="btn-secondary" id="gd-streak-sync-btn" type="button">立即同步</button>
             </div>
             <button class="btn-secondary" id="local-recovery-btn" style="width:100%;margin-top:9px">本機復原點</button>
-            ${remembered ? '<div class="settings-tip" style="margin-top:8px">iOS PWA 關閉後可能需要 Google 再確認一次授權；本程式會保留帳號並在上傳/還原時自動續權，不會清空登入設定。</div>' : ''}
+            ${remembered ? '<div class="settings-tip" style="margin-top:8px">開啟 APP 後會直接進入主畫面並嘗試無畫面續登入；上傳/還原也不需要先另外按登入。僅在 Google 判定授權已失效時才會顯示官方授權畫面。</div>' : ''}
             <button class="btn-fb-signout-bottom" id="gd-signout-btn" style="margin-top:10px">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:15px;height:15px"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
               登出 Google（${escapeHTML(emailLabel)}）
@@ -6609,15 +6613,59 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   Router._doNavigate('home');
 
-  // Warm the Google Identity script after the UI is already usable. This removes
-  // most of the first-click GIS loading delay without delaying app startup.
-  setTimeout(() => GDrive.preloadGIS(), 0);
+  // Warm the Google Identity script after the UI is already usable. The script
+  // also starts loading asynchronously from index.html, so this call doubles as
+  // a readiness gate before we arm the first-gesture no-UI reconnect.
+  setTimeout(() => {
+    void GDrive.preloadGIS().then(ready => {
+      if (ready) armSeamlessGoogleReconnect();
+    });
+  }, 0);
+
+  // V7.2.3 seamless reconnect:
+  // - The home screen is already usable before any Google work starts.
+  // - Never open an account chooser/consent dialog just because the PWA launched.
+  // - If a Google account was previously remembered, use the user's first normal
+  //   tap/click as the required browser gesture and attempt prompt:'none'.
+  // - Failure is intentionally silent; a later Drive button reuses that button
+  //   click for the normal Google token flow, so there is no separate login step.
+  const armSeamlessGoogleReconnect = () => {
+    if (!navigator.onLine || !DB.getGDriveClientId() || !GDrive.hasRememberedSession()) return;
+    if (GDrive.isSignedIn() || GDrive.tryRestoreFromStorage()) return;
+
+    let attempted = false;
+    const attempt = (event) => {
+      if (attempted) return;
+
+      // A Drive/login button already provides its own explicit OAuth gesture.
+      // Do not start a prompt:'none' request in capture phase and race it.
+      const target = event?.target;
+      if (target instanceof Element && target.closest('#gd-upload-btn,#gd-download-btn,#gd-streak-sync-btn,#gd-signin-btn')) return;
+
+      attempted = true;
+      document.removeEventListener('pointerdown', attempt, true);
+      document.removeEventListener('keydown', attempt, true);
+      void GDrive.tryRestoreToken({ noUi: true }).then(restored => {
+        if (!restored) return;
+        GDrive.scheduleStudyStreakSync(500);
+        if (DB.getGDriveAutoSync()) {
+          setTimeout(() => { void bootstrapGDriveInBackground(); }, 0);
+        }
+        if (Router.currentView === 'settings') Router._doNavigate('settings');
+      }).catch(() => {});
+    };
+
+    document.addEventListener('pointerdown', attempt, { capture: true, passive: true });
+    document.addEventListener('keydown', attempt, { capture: true });
+  };
 
   const bootstrapGDriveInBackground = async () => {
     if (!navigator.onLine || !DB.getGDriveClientId()) return;
     try {
-      let restored = GDrive.isSignedIn() || GDrive.tryRestoreFromStorage();
-      if (!restored && GDrive.hasRememberedSession()) restored = await GDrive.tryRestoreToken();
+      // V7.2.3: page startup must never launch Google OAuth UI. Only reuse an
+      // access token that is already valid in this PWA session. If the app was
+      // fully closed, a no-UI reconnect is armed on the user's first normal tap.
+      const restored = GDrive.isSignedIn() || GDrive.tryRestoreFromStorage();
       if (!restored) return;
 
       if (DB.getGDriveAutoSync()) {
