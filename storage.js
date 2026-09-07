@@ -27,6 +27,8 @@ const EMPTY_INDEXED_VALUES = {
 export class StorageBridge {
   constructor() {
     this.cache = new Map();
+    this.committed = new Map();
+    this.keyVersions = new Map();
     this.db = null;
     this.ready = false;
     this.pending = new Set();
@@ -40,7 +42,11 @@ export class StorageBridge {
     try {
       for (let i = 0; i < localStorage.length; i++) {
         const key = localStorage.key(i);
-        if (key) this.cache.set(key, localStorage.getItem(key));
+        if (key) {
+          const value = localStorage.getItem(key);
+          this.cache.set(key, value);
+          this.committed.set(key, value);
+        }
       }
     } catch {
       this.fallback = true;
@@ -69,6 +75,11 @@ export class StorageBridge {
           this.cache.set(key, legacy);
           migrations.push([key, legacy]);
         }
+      }
+
+      for (const key of INDEXED_KEYS) {
+        if (this.cache.has(key)) this.committed.set(key, this.cache.get(key));
+        else this.committed.delete(key);
       }
 
       if (migrations.length) await this._putRecords(migrations);
@@ -129,13 +140,21 @@ export class StorageBridge {
     if (previous === stringValue) return;
     this.revision++;
     if (INDEXED_KEYS.has(key) && this.db && !this.fallback) {
+      const writeVersion = (this.keyVersions.get(key) || 0) + 1;
+      this.keyVersions.set(key, writeVersion);
       // Synchronous callers see a pending value; a failed commit restores it.
       this.cache.set(key, stringValue);
       const run = async () => {
-        try { await this._putRecords([[key,stringValue]]); this.errors.delete(key); this._localRemove(key); }
+        try {
+          await this._putRecords([[key,stringValue]]);
+          this.committed.set(key, stringValue);
+          this.errors.delete(key);
+          this._localRemove(key);
+        }
         catch (error) {
-          if (this.cache.get(key) === stringValue) {
-            if (previous === null) this.cache.delete(key); else this.cache.set(key,previous);
+          if (this.keyVersions.get(key) === writeVersion) {
+            if (this.committed.has(key)) this.cache.set(key, this.committed.get(key));
+            else this.cache.delete(key);
           }
           this._failure(key,error,()=>this.setItem(key,stringValue));
           throw error;
@@ -146,7 +165,7 @@ export class StorageBridge {
       this._queue(pending);
       return;
     }
-    try { localStorage.setItem(key,stringValue); this.cache.set(key,stringValue); this.errors.delete(key); }
+    try { localStorage.setItem(key,stringValue); this.cache.set(key,stringValue); this.committed.set(key,stringValue); this.errors.delete(key); }
     catch(error) { this._failure(key,error,()=>this.setItem(key,stringValue)); throw error; }
   }
 
@@ -166,7 +185,7 @@ export class StorageBridge {
       tx.objectStore(KV_STORE).clear();tx.objectStore(SNAPSHOT_STORE).clear();
       tx.oncomplete=resolve;tx.onerror=tx.onabort=()=>reject(tx.error);
     });
-    this.cache.clear();localStorage.clear();this.diskRevision='';this.revision++;
+    this.cache.clear();this.committed.clear();this.keyVersions.clear();localStorage.clear();this.diskRevision='';this.revision++;
     this.channel?.postMessage('changed');
   }
 
@@ -188,8 +207,8 @@ export class StorageBridge {
     if (localRevision !== this.revision || this.pending.size || this.batchActive) return false;
     const revision=records.find(x=>x.key==='_revision')?.value || '';
     if(revision===this.diskRevision) return false;
-    for(const key of INDEXED_KEYS) this.cache.delete(key);
-    for(const record of records) if(INDEXED_KEYS.has(record.key)) this.cache.set(record.key,record.value);
+    for(const key of INDEXED_KEYS) { this.cache.delete(key);this.committed.delete(key); }
+    for(const record of records) if(INDEXED_KEYS.has(record.key)) {this.cache.set(record.key,record.value);this.committed.set(record.key,record.value);}
     this.diskRevision=revision;this.revision++;this._emit();return true;
   }
 
@@ -205,7 +224,11 @@ export class StorageBridge {
     this.batchActive=true;
     try {
       await this._putRecords(pairs.map(([key,value])=>[key,String(value)]));
-      for(const [key,value] of pairs) {this.cache.set(key,String(value));this._localRemove(key);}
+      for(const [key,value] of pairs) {
+        const stringValue=String(value);
+        this.cache.set(key,stringValue);this.committed.set(key,stringValue);this._localRemove(key);
+        this.keyVersions.set(key,(this.keyVersions.get(key)||0)+1);
+      }
       this.revision++;this._emit();
     } finally {this.batchActive=false;}
   }

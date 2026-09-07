@@ -4,6 +4,7 @@ export class TaskManager {
     this.active = new Map();
     this.listeners = new Set();
     this.remote = new Map();
+    this.exclusiveKey = null;
     this.id = globalThis.crypto?.randomUUID?.() || String(Math.random());
     if (typeof window !== 'undefined' && typeof BroadcastChannel !== 'undefined') {
       this.channel = new BroadcastChannel('vocabulary-v7-tasks');
@@ -22,11 +23,13 @@ export class TaskManager {
     for (const listener of this.listeners) listener(this);
   }
   start(label, {exclusive = false} = {}) {
-    if (exclusive && this.active.has(label)) throw new Error('TASK_ALREADY_RUNNING');
-    const key = exclusive ? label : Symbol(label);
+    const remoteBusy = [...this.remote.values()].some(v => v.busy && Date.now()-v.time < 30000);
+    if ((exclusive && (this.active.size > 0 || remoteBusy)) || this.exclusiveKey) throw new Error('TASK_ALREADY_RUNNING');
+    const key = Symbol(label);
     this.active.set(key, label); this._emit();
+    if (exclusive) this.exclusiveKey = key;
     let ended = false;
-    return () => { if (!ended) { ended=true;this.active.delete(key);this._emit(); } };
+    return () => { if (!ended) { ended=true;this.active.delete(key);if(this.exclusiveKey===key)this.exclusiveKey=null;this._emit(); } };
   }
   async run(label, fn, options) {
     const end = this.start(label, options);

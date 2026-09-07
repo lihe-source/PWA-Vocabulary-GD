@@ -1,22 +1,40 @@
-import { AppStorage } from './storage.js?v=V7_3_0';
-import { BackupSchema } from './backup-schema.js?v=V7_3_0';
-import { VersionManager } from './version-manager.js?v=V7_3_0';
-import { TrendChart } from './chart-renderer.js?v=V7_3_0';
-import { PUSH_CONFIG } from './push-config.js?v=V7_3_0';
-import { ReminderManager, reminderErrorMessage } from './reminder-manager.js?v=V7_3_0';
-import { StudyStreakManager, STUDY_ACTIVITY_TYPES, STUDY_DAYS_CSV_HEADER, mergeStudyDays } from './study-streak.js?v=V7_3_0';
-import { Tasks } from './task-manager.js?v=V7_3_0';
-import { request as netRequest, readableError } from './network.js?v=V7_3_0';
-import { BackupWorker } from './backup-worker-client.js?v=V7_3_0';
+import { AppStorage } from './storage.js?v=V7_4_0';
+import { BackupSchema } from './backup-schema.js?v=V7_4_0';
+import { VersionManager } from './version-manager.js?v=V7_4_0';
+import { TrendChart } from './chart-renderer.js?v=V7_4_0';
+import { PUSH_CONFIG } from './push-config.js?v=V7_4_0';
+import { ReminderManager, reminderErrorMessage } from './reminder-manager.js?v=V7_4_0';
+import { StudyStreakManager, STUDY_ACTIVITY_TYPES, STUDY_DAYS_CSV_HEADER, mergeStudyDays } from './study-streak.js?v=V7_4_0';
+import { Tasks } from './task-manager.js?v=V7_4_0';
+import { request as netRequest, readableError } from './network.js?v=V7_4_0';
+import { BackupWorker } from './backup-worker-client.js?v=V7_4_0';
+import { DraftManager } from './draft-manager.js?v=V7_4_0';
 
 // ===========================
-// 英文單字複習 PWA - app.js V7_3_0
-// V7.3.0：主畫面零阻塞、Google Drive 無打擾自動續登入與單一步驟授權
+// 英文單字複習 PWA - app.js V7_4_0
+// V7.4.0：主畫面零阻塞、Google Drive 無打擾自動續登入與單一步驟授權
 // ===========================
 
-const APP_VERSION = 'V7_3_0';
-const APP_DISPLAY_VERSION = 'V7.3.0';
-const APP_CACHE_VERSION = 'Voc-PWA-V7_3_0';
+const APP_VERSION = 'V7_4_0';
+const APP_DISPLAY_VERSION = 'V7.4.0';
+const APP_CACHE_VERSION = 'Voc-PWA-V7_4_0';
+const Theme = {
+  get() { return AppStorage.getItem('uiTheme') || 'dark'; },
+  apply(mode = this.get()) {
+    const resolved = mode === 'system'
+      ? (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
+      : mode;
+    document.documentElement.dataset.theme = resolved;
+    document.documentElement.dataset.themeMode = mode;
+    document.querySelector('meta[name="theme-color"]')?.setAttribute('content', resolved === 'dark' ? '#10231b' : '#1a7a4a');
+  },
+  set(mode) { AppStorage.setItem('uiTheme', mode);this.apply(mode); },
+  init() {
+    this.apply();
+    matchMedia('(prefers-color-scheme: dark)').addEventListener?.('change',()=>{if(this.get()==='system')this.apply('system');});
+  }
+};
+Theme.init();
 const canActivateAppUpdate = () => {
   const storageStatus = AppStorage.getStatus();
   if (Tasks.busy || storageStatus.pending || storageStatus.failed) return false;
@@ -1043,6 +1061,8 @@ function refreshStudyStreakUI() {
     todayState.textContent = summary.practicedToday ? '今天已完成練習' : '今天尚未完成練習';
     todayState.classList.toggle('is-complete', summary.practicedToday);
   }
+  const practicedDates = new Set(StudyStreak.getDays().map(day => day.date));
+  document.querySelectorAll('.streak-day[title]').forEach(day => day.classList.toggle('is-done', practicedDates.has(day.getAttribute('title'))));
   const syncState = document.getElementById('study-streak-sync-status');
   if (syncState) {
     const state = StudyStreak.getSyncState();
@@ -1822,7 +1842,7 @@ const GDrive = {
   },
 
   async silentRefresh({ noUi = false } = {}) {
-    // V7.3.0: prompt:'none' is used only for best-effort reconnects that must
+    // V7.4.0: prompt:'none' is used only for best-effort reconnects that must
     // never interrupt the user with Google's account/consent dialog.
     await this._requestToken({
       promptMode: noUi ? 'none' : '',
@@ -2386,28 +2406,7 @@ const Modal = {
   },
   hide() { const o = document.getElementById('modal-overlay'); o.classList.add('hidden'); o.setAttribute('aria-hidden','true'); }
 };
-const Drafts = {
-  timers: new Map(),
-  all() { try { return JSON.parse(AppStorage.getItem('vocabularyDrafts') || '{}'); } catch { return {}; } },
-  get(key) { return this.all()[key] || ''; },
-  save(key, value) {
-    clearTimeout(this.timers.get(key));
-    this.timers.set(key, setTimeout(() => {
-      const drafts=this.all();
-      if (value) drafts[key]=value; else delete drafts[key];
-      AppStorage.setItem('vocabularyDrafts',JSON.stringify(drafts));
-      this.timers.delete(key);
-    }, 350));
-  },
-  remove(key) { this.save(key, ''); },
-  flush() {
-    for (const [key,timer] of this.timers) { clearTimeout(timer);this.timers.delete(key); }
-    const essay=document.getElementById('essay-textarea');
-    const ask=document.getElementById('aiask-textarea');
-    if (essay) { const d=this.all();essay.value ? d.essay=essay.value : delete d.essay;AppStorage.setItem('vocabularyDrafts',JSON.stringify(d)); }
-    if (ask) { const d=this.all();ask.value ? d.aiAsk=ask.value : delete d.aiAsk;AppStorage.setItem('vocabularyDrafts',JSON.stringify(d)); }
-  }
-};
+const Drafts = new DraftManager({storage:AppStorage});
 function todayStr() {
   const d = new Date();
   return `${d.getFullYear()}/${String(d.getMonth()+1).padStart(2,'0')}/${String(d.getDate()).padStart(2,'0')}`;
@@ -2536,78 +2535,59 @@ const Views = {};
 Views.home = {
   render(container) {
     const streak = StudyStreak.getSummary();
+    const practicedDates = new Set(StudyStreak.getDays().map(day => day.date));
+    const weekdayNames = ['日','一','二','三','四','五','六'];
+    const weekDots = Array.from({length:7},(_,index)=>{
+      const date=new Date();date.setHours(12,0,0,0);date.setDate(date.getDate()-(6-index));
+      const key=`${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,'0')}-${String(date.getDate()).padStart(2,'0')}`;
+      return `<span class="streak-day ${practicedDates.has(key)?'is-done':''}" title="${escapeAttr(key)}"><b>${weekdayNames[date.getDay()]}</b><i></i></span>`;
+    }).join('');
+    const googleConnected = GDrive.isSignedIn() || GDrive.hasRememberedSession();
     container.innerHTML = `
       <div id="home-view">
+        <div class="home-welcome">
+          <div><h1>今天，練習一點英文</h1><p>持續學習，讓改變悄悄發生。</p></div>
+          <span class="home-cloud-state ${googleConnected?'is-connected':''}">${googleConnected?'Google 已連線':'本機模式'}</span>
+        </div>
         <section class="study-streak-card" aria-labelledby="study-streak-title">
           <div class="study-streak-heading">
-            <div class="study-streak-icon" aria-hidden="true">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2s1 4-2 6c-2 1-3-1-3-1s-4 4-2 9a6 6 0 0 0 12 0c1-4-2-7-5-8 1-2 0-4 0-6z"/><path d="M10 17c0 1.1.9 2 2 2s2-.9 2-2c0-1-.7-1.7-1.5-2.3-.1.8-.6 1.3-1.2 1.5-.5.1-.9-.2-1.1-.6-.1.4-.2.9-.2 1.4z"/></svg>
-            </div>
-            <div>
-              <div class="study-streak-title" id="study-streak-title">累積練習天數</div>
-              <div class="study-streak-today ${streak.practicedToday ? 'is-complete' : ''}" id="streak-today-state">${streak.practicedToday ? '今天已完成練習' : '今天尚未完成練習'}</div>
-            </div>
-            <div class="study-streak-total"><strong id="streak-total-days">${streak.totalDays}</strong><span>累積天數</span></div>
+            <div class="study-streak-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg></div>
+            <div><div class="study-streak-title" id="study-streak-title">連續練習</div><div class="study-streak-today ${streak.practicedToday?'is-complete':''}" id="streak-today-state">${streak.practicedToday?'今天已完成練習':'今天尚未完成練習'}</div></div>
+            <div class="study-streak-total"><strong><b id="streak-current-days">${streak.current}</b> 天</strong><span>累積 <b id="streak-total-days">${streak.totalDays}</b> 天</span></div>
           </div>
-          <div class="study-streak-metrics">
-            <div class="study-streak-metric is-current">
-              <span>連續練習天數</span>
-              <strong><b id="streak-current-days">${streak.current}</b> 天</strong>
-            </div>
-            <div class="study-streak-divider" aria-hidden="true"></div>
-            <div class="study-streak-metric">
-              <span>歷史最久練習天數</span>
-              <strong><b id="streak-longest-days">${streak.longest}</b> 天</strong>
-            </div>
-          </div>
+          <div class="streak-week" aria-label="最近七天練習狀態">${weekDots}</div>
+          <span id="streak-longest-days" hidden>${streak.longest}</span>
         </section>
-        <div class="home-hero" id="hero-card">
-          <div class="hero-label">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
-            今日例句
-          </div>
-          <div id="hero-content">
-            <div class="hero-idle"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" style="width:28px;height:28px;opacity:0.35;display:block;margin:0 auto 8px"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg><div style="font-size:12px;opacity:0.5">點右上角 ↻ 生成今日例句</div></div>
-          </div>
-          <button class="hero-refresh-btn" id="hero-refresh" title="強制重新生成">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
-          </button>
-        </div>
+        <button class="home-start-card" data-nav="practice">
+          <span><strong>準備好開始了嗎？</strong><small>10 個單字・約 5 分鐘</small><b>開始練習 →</b></span>
+          <svg viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="2"><path d="M24 12c-5-5-12-5-17-3v27c5-2 12-2 17 3m0-27c5-5 12-5 17-3v27c-5-2-12-2-17 3V12z"/><path d="M12 17h7M12 23h7m10-6h7m-7 6h7"/></svg>
+        </button>
         <div class="home-menu-grid">
-          <div class="menu-card" data-nav="practice">
-            <div class="menu-icon" style="background:#e8f5ee"><svg viewBox="0 0 24 24" fill="none" stroke="#1a7a4a" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg></div>
-            <div><div class="menu-card-title">英文練習</div><div class="menu-card-sub">單字拼寫測驗</div></div>
-          </div>
-          <div class="menu-card" data-nav="database">
-            <div class="menu-icon" style="background:#e8f0ff"><svg viewBox="0 0 24 24" fill="none" stroke="#3366cc" stroke-width="2"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg></div>
-            <div><div class="menu-card-title">資料庫</div><div class="menu-card-sub">管理單字資料</div></div>
-          </div>
-          <div class="menu-card" data-nav="stats">
-            <div class="menu-icon" style="background:#fff3e0"><svg viewBox="0 0 24 24" fill="none" stroke="#e67e00" stroke-width="2"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg></div>
-            <div><div class="menu-card-title">練習統計</div><div class="menu-card-sub">近期練習情形</div></div>
-          </div>
-          <div class="menu-card" data-nav="settings">
-            <div class="menu-icon" style="background:#f0e8ff"><svg viewBox="0 0 24 24" fill="none" stroke="#7c3aed" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></div>
-            <div><div class="menu-card-title">設定</div><div class="menu-card-sub">API Key 與例句匯入</div><div class="menu-card-ver">版本別：${APP_VERSION}</div></div>
-          </div>
+          <button class="menu-card" data-nav="practice" data-practice-mode="quiz"><div class="menu-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg></div><div><div class="menu-card-title">單字拼寫</div><div class="menu-card-sub">聽音拼字・加深記憶</div></div></button>
+          <button class="menu-card" data-nav="practice" data-practice-mode="reading"><div class="menu-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg></div><div><div class="menu-card-title">閱讀測驗</div><div class="menu-card-sub">閱讀理解・強化語感</div></div></button>
+          <button class="menu-card" data-nav="practice" data-practice-mode="essay"><div class="menu-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M8 13h8m-8 4h6"/></svg></div><div><div class="menu-card-title">文章撰寫</div><div class="menu-card-sub">練習表達・提升寫作</div></div></button>
+          <button class="menu-card" data-nav="practice" data-practice-mode="aiask"><div class="menu-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/><path d="M8 9h8M8 13h5"/></svg></div><div><div class="menu-card-title">AI 問答</div><div class="menu-card-sub">即時解答・深入學習</div></div></button>
         </div>
-        <div class="sentence-log-section">
-          <div class="sentence-log-header">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:15px;height:15px"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
-            每日例句記錄
-          </div>
-          <div id="sentence-log-content"></div>
+        <div class="home-hero" id="hero-card">
+          <div class="hero-label"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18h6M10 22h4"/><path d="M8 14a7 7 0 1 1 8 0c-1 1-1 2-1 2H9s0-1-1-2z"/></svg>今日例句</div>
+          <div id="hero-content"><div class="hero-idle"><div>點右上角 ↻ 生成今日例句</div></div></div>
+          <button class="hero-refresh-btn" id="hero-refresh" title="重新生成" aria-label="重新生成今日例句"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.5 9a9 9 0 0 1 14.9-3.4L23 10M1 14l4.6 4.4A9 9 0 0 0 20.5 15"/></svg></button>
         </div>
-        <div style="height:8px"></div>
-      </div>
-    `;
-    container.querySelectorAll('[data-nav]').forEach(el => el.addEventListener('click', () => Router.navigate(el.dataset.nav)));
-    document.getElementById('hero-refresh').addEventListener('click', () => this.loadSentence(true));
-    // On page load: show cached sentence if available, otherwise show idle state (no auto API call)
+        <div class="sentence-log-section"><div class="sentence-log-header"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M8 13h8m-8 4h6"/></svg>每日例句記錄</div><div id="sentence-log-content"></div></div>
+      </div>`;
+    container.querySelectorAll('[data-nav]').forEach(el => el.addEventListener('click', () => {
+      Router.navigate(el.dataset.nav);
+      const mode=el.dataset.practiceMode;
+      const target=document.getElementById('practice-view');
+      if(!mode||!target)return;
+      if(mode==='essay')Views.essay.render(target);
+      else if(mode==='reading')Views.readingQuiz.render(target);
+      else if(mode==='aiask')Views.aiAsk.render(target);
+    }));
+    document.getElementById('hero-refresh')?.addEventListener('click', () => this.loadSentence(true));
     const cached = DB.getTodaySentenceAny();
-    if (cached) { this.displaySentence(cached); }
-    this.renderSentenceLog();
-    refreshStudyStreakUI();
+    if (cached) this.displaySentence(cached);
+    this.renderSentenceLog();refreshStudyStreakUI();
   },
   async loadSentence(forceNew) {
     const heroContent = document.getElementById('hero-content');
@@ -2942,10 +2922,10 @@ Views.practice = {
     if (wordInfo) {
       const ttsOn = TTS.enabled;
       wordInfo.innerHTML = `
-        <div class="quiz-chinese">${word.chinese}</div>
+        <div class="quiz-chinese">${escapeHTML(word.chinese)}</div>
         <div class="quiz-phonetic-row">
-          <span class="quiz-pos">${word.partOfSpeech}</span>
-          ${word.phonetic ? `<span class="quiz-phonetic">/${word.phonetic}/</span>` : ''}
+          <span class="quiz-pos">${escapeHTML(word.partOfSpeech)}</span>
+          ${word.phonetic ? `<span class="quiz-phonetic">/${escapeHTML(word.phonetic)}/</span>` : ''}
           <button class="tts-inline-btn ${ttsOn?'':'tts-off'}" id="tts-replay-btn" title="${ttsOn?'再聽一次':'發音已關閉'}">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/>${ttsOn?`<path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/>`:`<line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/>`}</svg>
           </button>
@@ -3259,7 +3239,7 @@ Views.practice = {
     // Flash correct letters in red
     boxes.forEach((box,i) => { box.className='letter-box-vis wrong'; box.textContent=correctStr[i]||''; });
     if (!actionsEl) return;
-    actionsEl.innerHTML = `<div class="answer-reveal answer-reveal-wrong"><div class="revealed-word revealed-word-wrong">${word.english.toLowerCase()}</div><div class="reveal-hint">請重新輸入一次正確拼字</div></div>`;
+    actionsEl.innerHTML = `<div class="answer-reveal answer-reveal-wrong"><div class="revealed-word revealed-word-wrong">${escapeHTML(word.english.toLowerCase())}</div><div class="reveal-hint">請重新輸入一次正確拼字</div></div>`;
     state.waitingRetype = true;
     // Keep input locked until rebuilding finishes. This removes the old 80 ms
     // window where fast retyping was accepted and then silently erased.
@@ -3278,7 +3258,7 @@ Views.practice = {
       this._enterNextH = null;
     }
     const isLast = this.state.currentIdx + 1 >= this.state.words.length;
-    actionsEl.innerHTML = `<div class="correct-answer-row">${word.english.toLowerCase()}</div><button class="btn-primary" id="next-btn">${isLast ? '查看結果 →' : '下一題 → (Enter)'}</button>`;
+    actionsEl.innerHTML = `<div class="correct-answer-row">${escapeHTML(word.english.toLowerCase())}</div><button class="btn-primary" id="next-btn">${isLast ? '查看結果 →' : '下一題 → (Enter)'}</button>`;
     let advanced = false;
     const doNext = () => {
       if (advanced) return;
@@ -3332,8 +3312,8 @@ Views.practice = {
         ${wrongCount === 0 ? `<div style="text-align:center;padding:24px;color:var(--text-muted);font-weight:700">🎉 全部答對！太棒了！</div>`
           : state.wrongWords.map(w=>`
             <div class="wrong-word-card" data-id="${w.id}">
-              <div class="wrong-word-en">${w.english.toLowerCase()}</div>
-              <div class="wrong-word-meta"><span class="wrong-word-pos">${w.partOfSpeech}</span><span class="wrong-word-zh">${w.chinese}</span></div>
+              <div class="wrong-word-en">${escapeHTML(w.english.toLowerCase())}</div>
+              <div class="wrong-word-meta"><span class="wrong-word-pos">${escapeHTML(w.partOfSpeech)}</span><span class="wrong-word-zh">${escapeHTML(w.chinese)}</span></div>
               <button class="boost-btn ${DB.isBoosted(w.id)?'boosted':''}" data-boost="${w.id}">${DB.isBoosted(w.id)?'✓ 已加強練習':'⚡ 加入加強練習'}</button>
             </div>`).join('')}
         <div style="height:16px"></div>
@@ -3707,8 +3687,10 @@ Views.readingQuiz = {
 Views.database = {
   deleteMode: false, selectedIds: new Set(),
   aiCorrectMode: false, aiCorrectIds: new Set(),
+  pageSize: 80,
+  visibleCount: 80,
   sortMode: AppStorage.getItem('dbSortMode') || 'createdAt',
-  render(container) { this.deleteMode = false; this.selectedIds = new Set(); this.aiCorrectMode = false; this.aiCorrectIds = new Set(); this.renderList(container); },
+  render(container) { this.deleteMode = false; this.selectedIds = new Set(); this.aiCorrectMode = false; this.aiCorrectIds = new Set(); this.visibleCount=this.pageSize;this.renderList(container); },
   _sortWords(words) {
     const arr = [...words];
     if (this.sortMode === 'alpha') {
@@ -3728,35 +3710,37 @@ Views.database = {
   // Lightweight refresh: update only the word list + badge without destroying lookup card state
   _refreshWordList(container) {
     const rawWords = DB.getWords();
-    const words    = this._sortWords(rawWords);
+    const allWords = this._sortWords(rawWords);
+    const words = allWords.slice(0,this.visibleCount);
     const dm  = this.deleteMode;  const sel = this.selectedIds;
     const acm = this.aiCorrectMode; const acs = this.aiCorrectIds;
     // Update badge
     const badge = container.querySelector('.word-count-badge');
-    if (badge) badge.textContent = words.length + ' 個單字';
+    if (badge) badge.textContent = allWords.length + ' 個單字';
     // Update list
     const listEl = container.querySelector('#db-list');
     if (!listEl) return;
-    if (words.length === 0) {
+    if (allWords.length === 0) {
       listEl.innerHTML = `<div class="db-empty"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" style="display:block;margin:auto"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg><div class="db-empty-title">資料庫是空的</div><div class="db-empty-sub">點選「新增」或從 ECDICT 搜尋加入單字</div></div>`;
       return;
     }
     listEl.innerHTML = words.map(w => {
       const boosted = DB.isBoosted(w.id);
-      return `<div class="db-word-card ${dm?'delete-mode':acm?'ai-correct-mode':''}" data-id="${w.id}">
-        <div class="db-checkbox ${dm&&sel.has(w.id)?'checked':acm&&acs.has(w.id)?'checked ai-check':''}" data-id="${w.id}"></div>
+      return `<div class="db-word-card ${dm?'delete-mode':acm?'ai-correct-mode':''}" data-id="${escapeAttr(w.id)}">
+        <div class="db-checkbox ${dm&&sel.has(w.id)?'checked':acm&&acs.has(w.id)?'checked ai-check':''}" data-id="${escapeAttr(w.id)}"></div>
         <div class="db-word-main">
-          <div class="db-word-en">${w.english}${w.partOfSpeech?`<span class="db-word-pos">${w.partOfSpeech}</span>`:''}${boosted?'<span class="boost-badge">⚡</span>':''}</div>
-          ${w.phonetic?`<div class="db-word-phonetic">/${w.phonetic}/</div>`:''}
-          <div class="db-word-zh">${w.chinese}</div>
-          <div class="db-word-meta"><span>${w.createdAt||'—'}</span><span>答錯 ${w.wrongCount||0}次</span>${(w.frequencyWeight||1)>1?`<span>加權${w.frequencyWeight}x</span>`:''}</div>
+          <div class="db-word-en">${escapeHTML(w.english)}${w.partOfSpeech?`<span class="db-word-pos">${escapeHTML(w.partOfSpeech)}</span>`:''}${boosted?'<span class="boost-badge">⚡</span>':''}</div>
+          ${w.phonetic?`<div class="db-word-phonetic">/${escapeHTML(w.phonetic)}/</div>`:''}
+          <div class="db-word-zh">${escapeHTML(w.chinese)}</div>
+          <div class="db-word-meta"><span>${escapeHTML(w.createdAt||'—')}</span><span>答錯 ${Number(w.wrongCount)||0}次</span>${(Number(w.frequencyWeight)||1)>1?`<span>加權${Number(w.frequencyWeight)}x</span>`:''}</div>
         </div>
         <div class="db-word-actions">
-          <button class="db-tts-btn" data-tts="${w.english}" title="播放發音"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/></svg></button>
-          ${(!dm&&!acm)?`<button class="db-word-edit-btn" data-edit="${w.id}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg></button>`:''}
+          <button class="db-tts-btn" data-tts="${escapeAttr(w.english)}" title="播放發音"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/></svg></button>
+          ${(!dm&&!acm)?`<button class="db-word-edit-btn" data-edit="${escapeAttr(w.id)}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg></button>`:''}
         </div>
       </div>`;
-    }).join('');
+    }).join('') + (words.length < allWords.length ? `<button class="db-load-more" id="db-load-more">載入更多（已顯示 ${words.length} / ${allWords.length}）</button>` : '');
+    listEl.querySelector('#db-load-more')?.addEventListener('click',()=>{this.visibleCount+=this.pageSize;this._refreshWordList(container);});
     // Re-bind TTS and edit buttons on the refreshed list
     listEl.querySelectorAll('.db-tts-btn').forEach(btn => {
       btn.addEventListener('click', (e) => {
@@ -3791,7 +3775,8 @@ Views.database = {
 
   async renderList(container) {
     const rawWords = DB.getWords();
-    const words = this._sortWords(rawWords);
+    const allWords = this._sortWords(rawWords);
+    const words = allWords.slice(0,this.visibleCount);
     const dm = this.deleteMode; const sel = this.selectedIds;
     const acm = this.aiCorrectMode; const acs = this.aiCorrectIds;
     const ecdictMeta = await ECDICT.getMeta();
@@ -3799,7 +3784,7 @@ Views.database = {
     container.innerHTML = `
       <div class="section-header">
         <h1 class="section-title">資料庫</h1>
-        <span class="word-count-badge">${words.length} 個單字</span>
+        <span class="word-count-badge">${allWords.length} 個單字</span>
       </div>
       <div class="lookup-card">
         <!-- Card header -->
@@ -3893,23 +3878,25 @@ Views.database = {
           ? `<div class="db-empty"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" style="display:block;margin:auto"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg><div class="db-empty-title">資料庫是空的</div><div class="db-empty-sub">點選「新增」或從 ECDICT 搜尋加入單字</div></div>`
           : words.map(w => {
               const boosted = DB.isBoosted(w.id);
-              return `<div class="db-word-card ${dm?'delete-mode':acm?'ai-correct-mode':''}" data-id="${w.id}">
-                <div class="db-checkbox ${dm&&sel.has(w.id)?'checked':acm&&acs.has(w.id)?'checked ai-check':''}" data-id="${w.id}"></div>
+              return `<div class="db-word-card ${dm?'delete-mode':acm?'ai-correct-mode':''}" data-id="${escapeAttr(w.id)}">
+                <div class="db-checkbox ${dm&&sel.has(w.id)?'checked':acm&&acs.has(w.id)?'checked ai-check':''}" data-id="${escapeAttr(w.id)}"></div>
                 <div class="db-word-main">
-                  <div class="db-word-en">${w.english}${w.partOfSpeech ? `<span class="db-word-pos">${w.partOfSpeech}</span>` : ''}${boosted?'<span class="boost-badge">⚡</span>':''}</div>
-                  ${w.phonetic?`<div class="db-word-phonetic">/${w.phonetic}/</div>`:''}
-                  <div class="db-word-zh">${w.chinese}</div>
-                  <div class="db-word-meta"><span>${w.createdAt||'—'}</span><span>答錯 ${w.wrongCount||0}次</span>${(w.frequencyWeight||1)>1?`<span>加權${w.frequencyWeight}x</span>`:''}</div>
+                  <div class="db-word-en">${escapeHTML(w.english)}${w.partOfSpeech ? `<span class="db-word-pos">${escapeHTML(w.partOfSpeech)}</span>` : ''}${boosted?'<span class="boost-badge">⚡</span>':''}</div>
+                  ${w.phonetic?`<div class="db-word-phonetic">/${escapeHTML(w.phonetic)}/</div>`:''}
+                  <div class="db-word-zh">${escapeHTML(w.chinese)}</div>
+                  <div class="db-word-meta"><span>${escapeHTML(w.createdAt||'—')}</span><span>答錯 ${Number(w.wrongCount)||0}次</span>${(Number(w.frequencyWeight)||1)>1?`<span>加權${Number(w.frequencyWeight)}x</span>`:''}</div>
                 </div>
                 <div class="db-word-actions">
-                  <button class="db-tts-btn" data-tts="${w.english}" title="播放發音"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/></svg></button>
-                  ${(!dm&&!acm)?`<button class="db-word-edit-btn" data-edit="${w.id}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg></button>`:''}
+                  <button class="db-tts-btn" data-tts="${escapeAttr(w.english)}" title="播放發音"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/></svg></button>
+                  ${(!dm&&!acm)?`<button class="db-word-edit-btn" data-edit="${escapeAttr(w.id)}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg></button>`:''}
                 </div>
               </div>`;
             }).join('')}
+        ${words.length < allWords.length ? `<button class="db-load-more" id="db-load-more">載入更多（已顯示 ${words.length} / ${allWords.length}）</button>` : ''}
       </div></div>
       <div style="height:20px"></div>
     `;
+    container.querySelector('#db-load-more')?.addEventListener('click',()=>{this.visibleCount+=this.pageSize;this._refreshWordList(container);});
     // TTS buttons in word list
     container.querySelectorAll('.db-tts-btn').forEach(btn => {
       btn.addEventListener('click', (e) => {
@@ -4149,6 +4136,7 @@ Views.database = {
     // Sort chips
     container.querySelectorAll('.db-sort-chip').forEach(btn => btn.addEventListener('click', () => {
       this.sortMode = btn.dataset.sort;
+      this.visibleCount = this.pageSize;
       AppStorage.setItem('dbSortMode', this.sortMode);
       this.renderList(container);
     }));
@@ -4252,18 +4240,18 @@ Views.database = {
         ${results.map(r => {
           if (!r.entries || !r.entries.length) {
             return `<div style="padding:10px;background:var(--surface);border-radius:8px;border:1px solid var(--border);opacity:0.6">
-              <span style="font-weight:600;color:var(--text-primary)">${r.original.english}</span>
+              <span style="font-weight:600;color:var(--text-primary)">${escapeHTML(r.original.english)}</span>
               <span style="margin-left:8px;font-size:12px;color:var(--danger)">❌ ${r.error || '查無結果'}</span>
             </div>`;
           }
           const rawPhonetic = (r.entries[0].phonetic || '').replace(/^\/+|\/+$/g, '');
           // Default to entry matching original pos, else first
           const defIdx = Math.max(0, r.entries.findIndex(e => e.pos === r.original.partOfSpeech));
-          return `<div class="ai-correct-item" data-word-id="${r.original.id}" data-phonetic="${rawPhonetic}" style="padding:12px;background:var(--surface);border-radius:10px;border:1px solid var(--border)">
+          return `<div class="ai-correct-item" data-word-id="${escapeAttr(r.original.id)}" data-phonetic="${escapeAttr(rawPhonetic)}" style="padding:12px;background:var(--surface);border-radius:10px;border:1px solid var(--border)">
             <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap">
-              <span style="font-weight:700;font-size:15px;color:var(--text-primary)">${r.entries[0].english}</span>
+              <span style="font-weight:700;font-size:15px;color:var(--text-primary)">${escapeHTML(r.entries[0].english)}</span>
               ${rawPhonetic ? `<span style="font-size:12px;color:var(--text-secondary)">/${rawPhonetic}/</span>` : ''}
-              <span style="font-size:11px;color:var(--text-muted);margin-left:auto">原：${r.original.partOfSpeech||'—'} ${r.original.chinese}</span>
+              <span style="font-size:11px;color:var(--text-muted);margin-left:auto">原：${escapeHTML(r.original.partOfSpeech||'—')} ${escapeHTML(r.original.chinese)}</span>
             </div>
             <div style="display:flex;gap:8px;align-items:center;margin-bottom:6px">
               <span style="font-size:12px;color:var(--text-secondary);white-space:nowrap">詞性</span>
@@ -4587,10 +4575,10 @@ Views.essay = {
         <div class="essay-chips-row">
           ${this._pool.map(w => `<div class="essay-chip-pill">
             <div class="essay-chip-top">
-              <span class="essay-chip-en">${w.english}</span>
-              ${w.partOfSpeech ? `<span class="essay-chip-pos">${w.partOfSpeech}</span>` : ''}
+              <span class="essay-chip-en">${escapeHTML(w.english)}</span>
+              ${w.partOfSpeech ? `<span class="essay-chip-pos">${escapeHTML(w.partOfSpeech)}</span>` : ''}
             </div>
-            <div class="essay-chip-zh">${w.chinese}</div>
+            <div class="essay-chip-zh">${escapeHTML(w.chinese)}</div>
           </div>`).join('')}
         </div>
       </div>`;
@@ -5531,6 +5519,7 @@ Views.settings = {
     const autoSync    = DB.getGDriveAutoSync();
     const versionState = AppUpdater.getState();
     const storageState = AppStorage.getStatus();
+    const themeMode = Theme.get();
     const soundState = Sound.getStatus();
     const reminderSettings = DailyReminder.getSettings();
     const reminderCapabilities = DailyReminder.getCapabilities();
@@ -5615,6 +5604,19 @@ Views.settings = {
             ${clientId ? '<button class="btn-fb-signin" id="gd-signin-btn" style="width:100%;padding:9px 12px;font-size:13px">' + svgG + ' 使用 Google 帳號登入</button>' : ''}
             <div class="settings-tip" style="margin-top:8px;margin-bottom:0">登入後可將資料備份至 Google Drive，也可在雲端資料較多時自動同步到本機。設定請見下方。</div>
           `}
+        </div>
+
+        <div class="settings-section-label" style="margin-top:16px">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"/><path d="M12 1v2m0 18v2M4.2 4.2l1.4 1.4m12.8 12.8 1.4 1.4M1 12h2m18 0h2M4.2 19.8l1.4-1.4M18.4 5.6l1.4-1.4"/></svg>
+          外觀主題
+        </div>
+        <div class="settings-card theme-setting-card">
+          <div><strong>介面顯示</strong><small>選擇後立即套用並記住設定</small></div>
+          <select id="ui-theme-select" class="form-select" aria-label="外觀主題">
+            <option value="dark" ${themeMode==='dark'?'selected':''}>深色</option>
+            <option value="light" ${themeMode==='light'?'selected':''}>淺色</option>
+            <option value="system" ${themeMode==='system'?'selected':''}>跟隨系統</option>
+          </select>
         </div>
 
         <!-- 2. 一鍵匯出全部 -->
@@ -5999,6 +6001,11 @@ Views.settings = {
       <input type="file" id="one-click-import-input" accept=".csv,.zip" multiple style="display:none">
     `;
 
+    document.getElementById('ui-theme-select')?.addEventListener('change',event=>{
+      Theme.set(event.target.value);
+      showToast('✓ 外觀主題已更新');
+    });
+
     // ── 每日 Web Push 提醒 ──
     const reminderStatusEl = document.getElementById('reminder-status');
     const reminderStatusTextEl = document.getElementById('reminder-status-text');
@@ -6218,6 +6225,9 @@ Views.settings = {
     document.getElementById('one-click-export-btn').addEventListener('click', async () => {
       const words = DB.getWords(); const sentCsv = DB.exportSentencesCSV(); const statHistory = DB.getHistory(); const readingHistory = DB.getReadingQuizHistory();
       if (!words.length && !sentCsv.includes('\n') && !statHistory.length && !readingHistory.length && !DB.getEssayHistory().length && !DB.getAiAskHistory().length && !studyDays.length) { showToast('尚無資料可匯出'); return; }
+      let finishExport;
+      try { finishExport=Tasks.start('local-export',{exclusive:true}); }
+      catch(error) { showToast(readableError(error));return; }
       showToast('⏳ 正在打包...', 1800);
       try {
         const zip = new window.JSZip();
@@ -6237,7 +6247,7 @@ Views.settings = {
         showToast(`✓ 已匯出 ${count} 個檔案（ZIP）`, 3000);
       } catch(err) {
         showToast('匯出失敗，請重試');
-      }
+      } finally { finishExport(); }
     });
 
     // ── 一鍵匯入（自動識別類型）──
@@ -6246,6 +6256,10 @@ Views.settings = {
     oneClickImportInput.addEventListener('change', async (e) => {
       const files = [...e.target.files]; e.target.value = '';
       if (!files.length) return;
+      let finishImport;
+      try { finishImport=Tasks.start('local-import',{exclusive:true}); }
+      catch(error) { showToast(readableError(error));return; }
+      try {
 
       const results = []; const errors = []; const unknown = [];
 
@@ -6324,6 +6338,7 @@ Views.settings = {
 
       if (results.length > 0) {
         StudyStreak.migrateFromHistories(getStudyHistorySources(), { markPending: true });
+        await AppStorage.flush();
         GDrive.scheduleStudyStreakSync(300);
         refreshStudyStreakUI();
       }
@@ -6350,6 +6365,9 @@ Views.settings = {
         });
       }
       if (results.length > 0) this.render(container);
+      } catch(error) {
+        showToast('匯入未完成：'+readableError(error),5000);
+      } finally { finishImport(); }
     });
 
     // ── Google Drive 設定儲存 ──
@@ -6694,7 +6712,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
   }, 0);
 
-  // V7.3.0 seamless reconnect:
+  // V7.4.0 seamless reconnect:
   // - The home screen is already usable before any Google work starts.
   // - Never open an account chooser/consent dialog just because the PWA launched.
   // - If a Google account was previously remembered, use the user's first normal
@@ -6734,7 +6752,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   const bootstrapGDriveInBackground = async () => {
     if (!navigator.onLine || !DB.getGDriveClientId()) return;
     try {
-      // V7.3.0: page startup must never launch Google OAuth UI. Only reuse an
+      // V7.4.0: page startup must never launch Google OAuth UI. Only reuse an
       // access token that is already valid in this PWA session. If the app was
       // fully closed, a no-UI reconnect is armed on the user's first normal tap.
       const restored = GDrive.isSignedIn() || GDrive.tryRestoreFromStorage();
