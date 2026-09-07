@@ -1,23 +1,23 @@
-import { AppStorage } from './storage.js?v=V7_4_0';
-import { BackupSchema } from './backup-schema.js?v=V7_4_0';
-import { VersionManager } from './version-manager.js?v=V7_4_0';
-import { TrendChart } from './chart-renderer.js?v=V7_4_0';
-import { PUSH_CONFIG } from './push-config.js?v=V7_4_0';
-import { ReminderManager, reminderErrorMessage } from './reminder-manager.js?v=V7_4_0';
-import { StudyStreakManager, STUDY_ACTIVITY_TYPES, STUDY_DAYS_CSV_HEADER, mergeStudyDays } from './study-streak.js?v=V7_4_0';
-import { Tasks } from './task-manager.js?v=V7_4_0';
-import { request as netRequest, readableError } from './network.js?v=V7_4_0';
-import { BackupWorker } from './backup-worker-client.js?v=V7_4_0';
-import { DraftManager } from './draft-manager.js?v=V7_4_0';
+import { AppStorage } from './storage.js?v=V7_4_1';
+import { BackupSchema } from './backup-schema.js?v=V7_4_1';
+import { VersionManager } from './version-manager.js?v=V7_4_1';
+import { TrendChart } from './chart-renderer.js?v=V7_4_1';
+import { PUSH_CONFIG } from './push-config.js?v=V7_4_1';
+import { ReminderManager, reminderErrorMessage } from './reminder-manager.js?v=V7_4_1';
+import { StudyStreakManager, STUDY_ACTIVITY_TYPES, STUDY_DAYS_CSV_HEADER, mergeStudyDays } from './study-streak.js?v=V7_4_1';
+import { Tasks } from './task-manager.js?v=V7_4_1';
+import { request as netRequest, readableError } from './network.js?v=V7_4_1';
+import { BackupWorker } from './backup-worker-client.js?v=V7_4_1';
+import { DraftManager } from './draft-manager.js?v=V7_4_1';
 
 // ===========================
-// 英文單字複習 PWA - app.js V7_4_0
-// V7.4.0：主畫面零阻塞、Google Drive 無打擾自動續登入與單一步驟授權
+// 英文單字複習 PWA - app.js V7_4_1
+// V7.4.1：主畫面零阻塞、Google Drive 無打擾自動續登入與單一步驟授權
 // ===========================
 
-const APP_VERSION = 'V7_4_0';
-const APP_DISPLAY_VERSION = 'V7.4.0';
-const APP_CACHE_VERSION = 'Voc-PWA-V7_4_0';
+const APP_VERSION = 'V7_4_1';
+const APP_DISPLAY_VERSION = 'V7.4.1';
+const APP_CACHE_VERSION = 'Voc-PWA-V7_4_1';
 const Theme = {
   get() { return AppStorage.getItem('uiTheme') || 'dark'; },
   apply(mode = this.get()) {
@@ -1842,7 +1842,7 @@ const GDrive = {
   },
 
   async silentRefresh({ noUi = false } = {}) {
-    // V7.4.0: prompt:'none' is used only for best-effort reconnects that must
+    // V7.4.1: prompt:'none' is used only for best-effort reconnects that must
     // never interrupt the user with Google's account/consent dialog.
     await this._requestToken({
       promptMode: noUi ? 'none' : '',
@@ -2563,10 +2563,10 @@ Views.home = {
           <svg viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="2"><path d="M24 12c-5-5-12-5-17-3v27c5-2 12-2 17 3m0-27c5-5 12-5 17-3v27c-5-2-12-2-17 3V12z"/><path d="M12 17h7M12 23h7m10-6h7m-7 6h7"/></svg>
         </button>
         <div class="home-menu-grid">
-          <button class="menu-card" data-nav="practice" data-practice-mode="quiz"><div class="menu-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg></div><div><div class="menu-card-title">單字拼寫</div><div class="menu-card-sub">聽音拼字・加深記憶</div></div></button>
-          <button class="menu-card" data-nav="practice" data-practice-mode="reading"><div class="menu-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg></div><div><div class="menu-card-title">閱讀測驗</div><div class="menu-card-sub">閱讀理解・強化語感</div></div></button>
-          <button class="menu-card" data-nav="practice" data-practice-mode="essay"><div class="menu-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M8 13h8m-8 4h6"/></svg></div><div><div class="menu-card-title">文章撰寫</div><div class="menu-card-sub">練習表達・提升寫作</div></div></button>
-          <button class="menu-card" data-nav="practice" data-practice-mode="aiask"><div class="menu-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/><path d="M8 9h8M8 13h5"/></svg></div><div><div class="menu-card-title">AI 問答</div><div class="menu-card-sub">即時解答・深入學習</div></div></button>
+          <button class="menu-card" data-nav="practice" data-practice-mode="quiz"><div class="menu-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg></div><div class="menu-card-copy"><div class="menu-card-title">單字拼寫</div><div class="menu-card-sub">聽音拼字・加深記憶</div></div></button>
+          <button class="menu-card" data-nav="practice" data-practice-mode="reading"><div class="menu-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg></div><div class="menu-card-copy"><div class="menu-card-title">閱讀測驗</div><div class="menu-card-sub">閱讀理解・強化語感</div></div></button>
+          <button class="menu-card" data-nav="practice" data-practice-mode="essay"><div class="menu-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M8 13h8m-8 4h6"/></svg></div><div class="menu-card-copy"><div class="menu-card-title">文章撰寫</div><div class="menu-card-sub">練習表達・提升寫作</div></div></button>
+          <button class="menu-card" data-nav="practice" data-practice-mode="aiask"><div class="menu-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/><path d="M8 9h8M8 13h5"/></svg></div><div class="menu-card-copy"><div class="menu-card-title">AI 問答</div><div class="menu-card-sub">即時解答・深入學習</div></div></button>
         </div>
         <div class="home-hero" id="hero-card">
           <div class="hero-label"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18h6M10 22h4"/><path d="M8 14a7 7 0 1 1 8 0c-1 1-1 2-1 2H9s0-1-1-2z"/></svg>今日例句</div>
@@ -6712,7 +6712,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
   }, 0);
 
-  // V7.4.0 seamless reconnect:
+  // V7.4.1 seamless reconnect:
   // - The home screen is already usable before any Google work starts.
   // - Never open an account chooser/consent dialog just because the PWA launched.
   // - If a Google account was previously remembered, use the user's first normal
@@ -6752,7 +6752,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   const bootstrapGDriveInBackground = async () => {
     if (!navigator.onLine || !DB.getGDriveClientId()) return;
     try {
-      // V7.4.0: page startup must never launch Google OAuth UI. Only reuse an
+      // V7.4.1: page startup must never launch Google OAuth UI. Only reuse an
       // access token that is already valid in this PWA session. If the app was
       // fully closed, a no-UI reconnect is armed on the user's first normal tap.
       const restored = GDrive.isSignedIn() || GDrive.tryRestoreFromStorage();

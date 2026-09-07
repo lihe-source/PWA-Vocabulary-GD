@@ -39,7 +39,7 @@ test('exclusive tasks block different restore and sync labels', () => {
 
 test('update activation stops when storage flush fails', async () => {
   let posted=false;
-  const manager=new VersionManager({currentVersion:'V7_4_0',displayVersion:'V7.4.0',storage:{flush:async()=>{throw new Error('write failed');}},canActivate:()=>true});
+  const manager=new VersionManager({currentVersion:'V7_4_1',displayVersion:'V7.4.1',storage:{flush:async()=>{throw new Error('write failed');}},canActivate:()=>true});
   const activated=await manager.activateWaitingIfSafe({postMessage:()=>{posted=true;}});
   assert.equal(activated,false);assert.equal(posted,false);
 });

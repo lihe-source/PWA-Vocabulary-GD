@@ -4,23 +4,23 @@ import { readFile } from 'node:fs/promises';
 
 const text = name => readFile(new URL(`./${name}`, import.meta.url), 'utf8');
 
-test('all public app surfaces use the V7.4.0 cache/version', async () => {
+test('all public app surfaces use the V7.4.1 cache/version', async () => {
   const [app, html, sw, version, manifest] = await Promise.all([
     text('app.js'), text('index.html'), text('sw.js'), text('version.json'), text('manifest.json')
   ]);
-  assert.match(app, /APP_VERSION = 'V7_4_0'/);
-  assert.match(html, /app\.js\?v=V7_4_0/);
-  assert.match(sw, /Voc-PWA-V7_4_0/);
-  assert.match(sw, /study-streak\.js\?v=V7_4_0/);
-  assert.match(sw, /backup-worker\.js\?v=V7_4_0/);
-  assert.match(sw, /task-manager\.js\?v=V7_4_0/);
+  assert.match(app, /APP_VERSION = 'V7_4_1'/);
+  assert.match(html, /app\.js\?v=V7_4_1/);
+  assert.match(sw, /Voc-PWA-V7_4_1/);
+  assert.match(sw, /study-streak\.js\?v=V7_4_1/);
+  assert.match(sw, /backup-worker\.js\?v=V7_4_1/);
+  assert.match(sw, /task-manager\.js\?v=V7_4_1/);
   assert.equal(JSON.parse(version).schemaVersion, 8);
-  assert.match(JSON.parse(manifest).name, /V7\.4\.0/);
+  assert.match(JSON.parse(manifest).name, /V7\.4\.1/);
 });
 
 test('study streak UI uses the green theme and a stable mobile settings layout', async () => {
   const [app, style] = await Promise.all([text('app.js'), text('style.css')]);
-  const streakSection = style.split('/* ===== V7.4.0 Study streak')[1]
+  const streakSection = style.split('/* ===== V7.4.1 Study streak')[1]
     ?.split('/* ===== V7.1.0')[0] || '';
 
   assert.match(streakSection, /margin:\s*12px/);

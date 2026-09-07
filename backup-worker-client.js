@@ -11,7 +11,7 @@ function resetWorker(error) {
 function getWorker() {
   if (worker) return worker;
   if (typeof Worker === 'undefined') throw new Error('WORKER_UNAVAILABLE');
-  worker=new Worker('./backup-worker.js?v=V7_4_0',{type:'module'});
+  worker=new Worker('./backup-worker.js?v=V7_4_1',{type:'module'});
   worker.onmessage=({data})=>{
     const job=pending.get(data?.id);if(!job)return;
     pending.delete(data.id);clearTimeout(job.timer);
