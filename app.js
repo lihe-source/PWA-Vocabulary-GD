@@ -1,20 +1,25 @@
-import { AppStorage } from './storage.js?v=V7_2_3';
-import { BackupSchema } from './backup-schema.js?v=V7_2_3';
-import { VersionManager } from './version-manager.js?v=V7_2_3';
-import { TrendChart } from './chart-renderer.js?v=V7_2_3';
-import { PUSH_CONFIG } from './push-config.js?v=V7_2_3';
-import { ReminderManager, reminderErrorMessage } from './reminder-manager.js?v=V7_2_3';
-import { StudyStreakManager, STUDY_ACTIVITY_TYPES, STUDY_DAYS_CSV_HEADER, mergeStudyDays } from './study-streak.js?v=V7_2_3';
+import { AppStorage } from './storage.js?v=V7_3_0';
+import { BackupSchema } from './backup-schema.js?v=V7_3_0';
+import { VersionManager } from './version-manager.js?v=V7_3_0';
+import { TrendChart } from './chart-renderer.js?v=V7_3_0';
+import { PUSH_CONFIG } from './push-config.js?v=V7_3_0';
+import { ReminderManager, reminderErrorMessage } from './reminder-manager.js?v=V7_3_0';
+import { StudyStreakManager, STUDY_ACTIVITY_TYPES, STUDY_DAYS_CSV_HEADER, mergeStudyDays } from './study-streak.js?v=V7_3_0';
+import { Tasks } from './task-manager.js?v=V7_3_0';
+import { request as netRequest, readableError } from './network.js?v=V7_3_0';
+import { BackupWorker } from './backup-worker-client.js?v=V7_3_0';
 
 // ===========================
-// 英文單字複習 PWA - app.js V7_2_3
-// V7.2.3：主畫面零阻塞、Google Drive 無打擾自動續登入與單一步驟授權
+// 英文單字複習 PWA - app.js V7_3_0
+// V7.3.0：主畫面零阻塞、Google Drive 無打擾自動續登入與單一步驟授權
 // ===========================
 
-const APP_VERSION = 'V7_2_3';
-const APP_DISPLAY_VERSION = 'V7.2.3';
-const APP_CACHE_VERSION = 'Voc-PWA-V7_2_3';
+const APP_VERSION = 'V7_3_0';
+const APP_DISPLAY_VERSION = 'V7.3.0';
+const APP_CACHE_VERSION = 'Voc-PWA-V7_3_0';
 const canActivateAppUpdate = () => {
+  const storageStatus = AppStorage.getStatus();
+  if (Tasks.busy || storageStatus.pending || storageStatus.failed) return false;
   if (document.querySelector('#quiz-ghost-input, .essay-textarea, .reading-quiz-shell, .reading-loading, .ai-loading')) return false;
   const aiAskInput = document.querySelector('.aiask-textarea');
   return !String(aiAskInput?.value || '').trim();
@@ -29,11 +34,13 @@ const AppUpdater = new VersionManager({
 });
 const DailyReminder = new ReminderManager({ storage: AppStorage, config: PUSH_CONFIG });
 const resumeAppUpdateWhenSafe = () => {
+  if (Tasks.busy) return;
   void AppStorage.flush().then(() => {
     void AppUpdater.activateWaitingIfSafe();
     void AppUpdater.reloadIfSafe();
-  });
+  }).catch(() => {});
 };
+Tasks.onChange(resumeAppUpdateWhenSafe);
 
 // ===== Web Audio Sound Effects =====
 // iOS/PWA note: speechSynthesis can interrupt Web Audio.  Keep one low-latency
@@ -1636,14 +1643,24 @@ const GDrive = {
     if (this._gisPromise) return this._gisPromise;
 
     this._gisPromise = new Promise((resolve, reject) => {
-      const finish = () => {
-        if (window.google?.accounts?.oauth2) resolve();
-        else reject(new Error('GIS_LOAD_FAILED'));
+      let settled = false;
+      const complete = (fn, value) => {
+        if (settled) return;
+        settled = true;
+        clearInterval(poll);
+        clearTimeout(timeout);
+        fn(value);
       };
+      const finish = () => {
+        if (window.google?.accounts?.oauth2) complete(resolve);
+      };
+      const poll = setInterval(finish, 75);
+      const timeout = setTimeout(() => complete(reject, new Error('GIS_LOAD_FAILED')), 12000);
       const existing = document.querySelector('script[data-gis="1"]');
       if (existing) {
         existing.addEventListener('load', finish, { once: true });
-        existing.addEventListener('error', () => reject(new Error('GIS_LOAD_FAILED')), { once: true });
+        existing.addEventListener('error', () => complete(reject, new Error('GIS_LOAD_FAILED')), { once: true });
+        finish();
         return;
       }
       const script = document.createElement('script');
@@ -1652,7 +1669,7 @@ const GDrive = {
       script.defer = true;
       script.dataset.gis = '1';
       script.onload = finish;
-      script.onerror = () => reject(new Error('GIS_LOAD_FAILED'));
+      script.onerror = () => complete(reject, new Error('GIS_LOAD_FAILED'));
       document.head.appendChild(script);
     }).catch(error => {
       this._gisPromise = null;
@@ -1696,10 +1713,10 @@ const GDrive = {
   refreshUserEmail(token = this._token) {
     if (!token) return Promise.resolve(this.getUserEmail());
     if (this._profilePromise) return this._profilePromise;
-    this._profilePromise = fetch('https://www.googleapis.com/oauth2/v1/userinfo', {
+    this._profilePromise = netRequest('https://www.googleapis.com/oauth2/v1/userinfo', {
       headers: { Authorization: 'Bearer ' + token }
-    })
-      .then(response => response.ok ? response.json() : null)
+    }, { timeout: 12000, retries: 1 })
+      .then(response => response.data)
       .then(info => {
         // Ignore a late profile response if another token has already replaced it.
         if (token !== this._token) return this.getUserEmail();
@@ -1771,15 +1788,18 @@ const GDrive = {
       const hint = accountHint || this.getUserEmail();
       return new Promise((resolve, reject) => {
         let settled = false;
+        const timer = setTimeout(() => fail(new Error('AUTH_TIMEOUT')), 45000);
         const fail = (err) => {
           if (settled) return;
           settled = true;
+          clearTimeout(timer);
           reject(err instanceof Error ? err : new Error(String(err || 'AUTH_FAILED')));
         };
         client.callback = (resp) => {
           if (settled) return;
           if (resp.error) { fail(new Error(resp.error)); return; }
           settled = true;
+          clearTimeout(timer);
 
           // Do not hold up sign-in for the extra userinfo HTTP request. Persist the
           // access token immediately; refresh the e-mail label in the background.
@@ -1802,7 +1822,7 @@ const GDrive = {
   },
 
   async silentRefresh({ noUi = false } = {}) {
-    // V7.2.3: prompt:'none' is used only for best-effort reconnects that must
+    // V7.3.0: prompt:'none' is used only for best-effort reconnects that must
     // never interrupt the user with Google's account/consent dialog.
     await this._requestToken({
       promptMode: noUi ? 'none' : '',
@@ -1897,12 +1917,11 @@ const GDrive = {
     // Local recovery points live in this app's own IndexedDB. They do not need
     // the expensive cloud checksum pass; keeping schemaVersion=8 preserves all
     // collections, including studyDays, when the snapshot is restored.
-    return {
-      ...this._buildCollections(),
-      schemaVersion: 8,
+    return BackupSchema.attach(this._buildCollections(), {
       appVersion: APP_DISPLAY_VERSION,
-      updatedAt: new Date().toISOString()
-    };
+      deviceId: this._getDeviceId(),
+      revision: Date.now()
+    });
   },
 
   _countPayloadItems(data = {}) {
@@ -1929,25 +1948,23 @@ const GDrive = {
   async _listStudyStreakFiles() {
     const q = `name='${this.STUDY_STREAK_FILE}' and mimeType='application/json' and trashed=false`;
     const params = new URLSearchParams({ q, fields: 'files(id,name,createdTime,modifiedTime)', orderBy: 'modifiedTime desc', pageSize: '20' });
-    const response = await fetch('https://www.googleapis.com/drive/v3/files?' + params, {
+    const response = await netRequest('https://www.googleapis.com/drive/v3/files?' + params, {
       headers: { Authorization: 'Bearer ' + this._token }
+    }, { timeout: 20000, retries: 1 }).catch(error => {
+      if (error.message === 'TOKEN_EXPIRED') this._clearTokenOnly();
+      throw error;
     });
-    if (!response.ok) {
-      if (response.status === 401) this._clearTokenOnly();
-      throw new Error('STREAK_LIST_FAILED: ' + response.status);
-    }
-    return (await response.json()).files || [];
+    return response.data.files || [];
   },
 
   async _downloadStudyStreakFile(fileId) {
-    const response = await fetch(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}?alt=media`, {
+    const response = await netRequest(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}?alt=media`, {
       headers: { Authorization: 'Bearer ' + this._token }
+    }, { timeout: 20000, retries: 1 }).catch(error => {
+      if (error.message === 'TOKEN_EXPIRED') this._clearTokenOnly();
+      throw error;
     });
-    if (!response.ok) {
-      if (response.status === 401) this._clearTokenOnly();
-      throw new Error('STREAK_DOWNLOAD_FAILED: ' + response.status);
-    }
-    const data = await response.json();
+    const data = response.data;
     if (!data || !Array.isArray(data.studyDays)) throw new Error('STREAK_FILE_INVALID');
     return data;
   },
@@ -1978,29 +1995,27 @@ const GDrive = {
     const body = '--' + boundary + '\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n'
       + JSON.stringify(metadata) + '\r\n--' + boundary + '\r\nContent-Type: application/json\r\n\r\n'
       + JSON.stringify(payload) + '\r\n--' + boundary + '--';
-    const response = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart', {
+    const response = await netRequest('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart', {
       method: 'POST',
       headers: { Authorization: 'Bearer ' + this._token, 'Content-Type': 'multipart/related; boundary=' + boundary },
       body
+    }, { timeout: 30000, retries: 0 }).catch(error => {
+      if (error.message === 'TOKEN_EXPIRED') this._clearTokenOnly();
+      throw error;
     });
-    if (!response.ok) {
-      if (response.status === 401) this._clearTokenOnly();
-      throw new Error('STREAK_CREATE_FAILED: ' + response.status);
-    }
-    return response.json();
+    return response.data;
   },
 
   async _updateStudyStreakFile(fileId, payload) {
-    const response = await fetch(`https://www.googleapis.com/upload/drive/v3/files/${encodeURIComponent(fileId)}?uploadType=media`, {
+    const response = await netRequest(`https://www.googleapis.com/upload/drive/v3/files/${encodeURIComponent(fileId)}?uploadType=media`, {
       method: 'PATCH',
       headers: { Authorization: 'Bearer ' + this._token, 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
+    }, { timeout: 30000, retries: 0 }).catch(error => {
+      if (error.message === 'TOKEN_EXPIRED') this._clearTokenOnly();
+      throw error;
     });
-    if (!response.ok) {
-      if (response.status === 401) this._clearTokenOnly();
-      throw new Error('STREAK_UPDATE_FAILED: ' + response.status);
-    }
-    return response.json();
+    return response.data;
   },
 
   async _readStudyStreakFiles(files) {
@@ -2060,7 +2075,7 @@ const GDrive = {
     if (!navigator.onLine || !this.hasRememberedSession() || !DB.getGDriveClientId()) return;
     this._streakSyncTimer = setTimeout(() => {
       this._streakSyncTimer = null;
-      void this.syncStudyStreak({ interactive: false }).catch(error => {
+      void Tasks.run('streak-sync', () => this.syncStudyStreak({ interactive: false }), { exclusive: true }).catch(error => {
         StudyStreak.markPending();
         refreshStudyStreakUI();
         console.warn('[GDrive] Study streak sync deferred.', error.message);
@@ -2078,8 +2093,14 @@ const GDrive = {
     await yieldForUI();
 
     progress('正在準備備份資料…');
+    await AppStorage.flush();
     await yieldForUI();
-    const data = this._buildPayload();
+    const prepared = await BackupWorker.prepare(this._buildCollections(), {
+      appVersion: APP_DISPLAY_VERSION,
+      deviceId: this._getDeviceId(),
+      revision: Date.now()
+    });
+    const data = prepared.payload;
     await yieldForUI();
 
     const folderId = DB.getGDriveFolderId();
@@ -2108,7 +2129,7 @@ const GDrive = {
 
     progress('正在建立上傳檔案…');
     await yieldForUI();
-    const json = JSON.stringify(data);
+    const json = prepared.json;
     const prefix = '--' + boundary + '\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n'
       + JSON.stringify(metadata) + '\r\n--' + boundary + '\r\nContent-Type: application/json\r\n\r\n';
     const suffix = '\r\n--' + boundary + '--';
@@ -2118,16 +2139,14 @@ const GDrive = {
     await yieldForUI();
 
     progress('正在上傳 Google Drive…');
-    const r = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart', {
+    await netRequest('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart', {
       method: 'POST',
       headers: { Authorization: 'Bearer ' + this._token, 'Content-Type': 'multipart/related; boundary=' + boundary },
       body
+    }, { timeout: 45000, retries: 0 }).catch(error => {
+      if (error.message === 'TOKEN_EXPIRED') this._clearTokenOnly();
+      throw error;
     });
-    if (!r.ok) {
-      const err = await r.json().catch(() => ({}));
-      if (r.status === 401) { this._clearTokenOnly(); throw new Error('TOKEN_EXPIRED'); }
-      throw new Error('UPLOAD_FAILED: ' + (err.error?.message || r.status));
-    }
     const now = new Date().toLocaleString('zh-TW');
     DB.setGDriveLastSync(now);
 
@@ -2147,15 +2166,13 @@ const GDrive = {
     let q = "name contains 'vocab_backup_' and mimeType='application/json' and trashed=false";
     if (folderId) q += " and '" + folderId + "' in parents";
     const params = new URLSearchParams({ q, fields: 'files(id,name,createdTime,description)', orderBy: 'createdTime desc', pageSize: '10' });
-    const r = await fetch('https://www.googleapis.com/drive/v3/files?' + params, {
+    const r = await netRequest('https://www.googleapis.com/drive/v3/files?' + params, {
       headers: { Authorization: 'Bearer ' + this._token }
+    }, { timeout: 20000, retries: 1 }).catch(error => {
+      if (error.message === 'TOKEN_EXPIRED') this._clearTokenOnly();
+      throw error;
     });
-    if (!r.ok) {
-      if (r.status === 401) { this._clearTokenOnly(); throw new Error('TOKEN_EXPIRED'); }
-      throw new Error('LIST_FAILED: ' + r.status);
-    }
-    const data = await r.json();
-    return data.files || [];
+    return r.data.files || [];
   },
 
   async downloadFile(fileId, options = {}) {
@@ -2163,22 +2180,21 @@ const GDrive = {
     progress('正在確認 Google 登入…');
     await this.ensureToken(options);
     progress('正在下載備份…');
-    const r = await fetch('https://www.googleapis.com/drive/v3/files/' + encodeURIComponent(fileId) + '?alt=media', {
+    const r = await netRequest('https://www.googleapis.com/drive/v3/files/' + encodeURIComponent(fileId) + '?alt=media', {
       headers: { Authorization: 'Bearer ' + this._token }
+    }, { timeout: 30000, retries: 1, responseType: 'text' }).catch(error => {
+      if (error.message === 'TOKEN_EXPIRED') this._clearTokenOnly();
+      throw error;
     });
-    if (!r.ok) {
-      if (r.status === 401) { this._clearTokenOnly(); throw new Error('TOKEN_EXPIRED'); }
-      throw new Error('DOWNLOAD_FAILED: ' + r.status);
-    }
     progress('正在驗證備份…');
-    const data = await r.json();
+    const data = await BackupWorker.parse(r.data);
     await yieldForUI();
-    const validation = BackupSchema.validate(data);
-    if (!validation.valid) throw new Error('BACKUP_INVALID_' + validation.reason);
     return data;
   },
 
   async autoRestoreIfCloudHasMore(options = {}) {
+    await AppStorage.flush();
+    const expectedRevision = AppStorage.getStatus().revision;
     const files = await this.listBackups(options);
     const localPayload = this._buildPayload();
     if (!files.length) {
@@ -2202,7 +2218,8 @@ const GDrive = {
     }
 
     await AppStorage.createRecoverySnapshot(this._buildRecoveryPayload(), 'before-auto-cloud-restore');
-    const syncedAt = await this.applyDownload(cloudData, 'overwrite', { skipSnapshot: true, prevalidated: true });
+    if (AppStorage.getStatus().revision !== expectedRevision) return { status: 'local_changed', ...comparison, file: latestFile };
+    const syncedAt = await this.applyDownload(cloudData, 'overwrite', { skipSnapshot: true, prevalidated: true, expectedRevision });
     return { status: 'restored', syncedAt, ...comparison, file: latestFile };
   },
 
@@ -2211,9 +2228,11 @@ const GDrive = {
     progress('正在驗證備份…');
     await yieldForUI();
 
+    await AppStorage.flush();
+    const expectedRevision = options.expectedRevision ?? AppStorage.getStatus().revision;
     const validation = options.prevalidated
       ? { valid: true, collections: BackupSchema.normalize(data), sourceSchemaVersion: Number(data?.schemaVersion) || 0 }
-      : BackupSchema.validate(data);
+      : await BackupWorker.validate(data);
     if (!validation.valid) throw new Error('BACKUP_INVALID_' + validation.reason);
 
     if (!options.skipSnapshot) {
@@ -2312,11 +2331,17 @@ const GDrive = {
     }
 
     await yieldForUI();
-    await AppStorage.setItemsBatch(writes);
+    if (validation.sourceSchemaVersion >= 8) {
+      const nextDays = mode === 'overwrite'
+        ? mergeStudyDays(incoming.studyDays || [])
+        : mergeStudyDays(StudyStreak.getDays(), incoming.studyDays || []);
+      writes.studyActivityDays = JSON.stringify(nextDays);
+    }
+
+    await AppStorage.setItemsBatch(writes, { expectedRevision });
 
     if (validation.sourceSchemaVersion >= 8) {
-      if (mode === 'overwrite') StudyStreak.replace(incoming.studyDays || [], { markPending: true });
-      else StudyStreak.merge(incoming.studyDays || [], { markPending: true });
+      StudyStreak.markPending();
     } else {
       StudyStreak.migrateFromHistories(getStudyHistorySources(), { markPending: true });
     }
@@ -2360,6 +2385,28 @@ const Modal = {
     o.onclick = (e) => { if (e.target === o) this.hide(); };
   },
   hide() { const o = document.getElementById('modal-overlay'); o.classList.add('hidden'); o.setAttribute('aria-hidden','true'); }
+};
+const Drafts = {
+  timers: new Map(),
+  all() { try { return JSON.parse(AppStorage.getItem('vocabularyDrafts') || '{}'); } catch { return {}; } },
+  get(key) { return this.all()[key] || ''; },
+  save(key, value) {
+    clearTimeout(this.timers.get(key));
+    this.timers.set(key, setTimeout(() => {
+      const drafts=this.all();
+      if (value) drafts[key]=value; else delete drafts[key];
+      AppStorage.setItem('vocabularyDrafts',JSON.stringify(drafts));
+      this.timers.delete(key);
+    }, 350));
+  },
+  remove(key) { this.save(key, ''); },
+  flush() {
+    for (const [key,timer] of this.timers) { clearTimeout(timer);this.timers.delete(key); }
+    const essay=document.getElementById('essay-textarea');
+    const ask=document.getElementById('aiask-textarea');
+    if (essay) { const d=this.all();essay.value ? d.essay=essay.value : delete d.essay;AppStorage.setItem('vocabularyDrafts',JSON.stringify(d)); }
+    if (ask) { const d=this.all();ask.value ? d.aiAsk=ask.value : delete d.aiAsk;AppStorage.setItem('vocabularyDrafts',JSON.stringify(d)); }
+  }
 };
 function todayStr() {
   const d = new Date();
@@ -2448,7 +2495,7 @@ const Router = {
         <div class="modal-handle"></div>
         <div class="modal-title">⚠️ ${isEssay ? "文章撰寫中" : "測驗進行中"}</div>
         <p style="color:var(--text-muted);font-size:14px;margin-bottom:16px">
-          ${isEssay ? "離開將會中斷目前的文章撰寫，<br>已輸入的內容將不會被儲存。" : "離開將會中斷目前的測驗，<br>進度將不會被記錄。"}確定要離開嗎？
+          ${isEssay ? "離開會中斷目前的文章撰寫，<br>草稿會保留在本機。" : "離開將會中斷目前的測驗，<br>進度將不會被記錄。"}確定要離開嗎？
         </p>
         <div class="modal-actions">
           <button class="modal-btn-cancel" id="stay-btn">${isEssay ? "繼續撰寫" : "繼續測驗"}</button>
@@ -4479,11 +4526,18 @@ Views.essay = {
 
     const textarea = document.getElementById('essay-textarea');
     const charCount = document.getElementById('essay-char-count');
+    const essayDraft = Drafts.get('essay');
+    if (textarea && essayDraft) {
+      textarea.value = essayDraft.slice(0, 500);
+      charCount.textContent = `${textarea.value.length} / 500`;
+      Router.essayActive = true;
+    }
     textarea?.addEventListener('input', () => {
       const len = textarea.value.length;
       charCount.textContent = `${len} / 500`;
       charCount.style.color = len > 450 ? 'var(--danger)' : 'var(--text-muted)';
       Router.essayActive = len > 0;
+      Drafts.save('essay', textarea.value);
     });
 
     document.getElementById('essay-submit-btn')?.addEventListener('click', async () => {
@@ -4506,6 +4560,7 @@ Views.essay = {
         this._renderFeedback(resultArea, feedback, essay, pool, container);
         const annotatedHtml = Views.essay._buildAnnotatedEssay(essay, (feedback.grammar||[]).map((g,i)=>({...g,idx:i})));
         DB.addEssaySession({ date: todayStr(), words: pool, essay, feedback: JSON.stringify(feedback), score: feedback.score, annotatedHtml, essayMode: isAiMode?'ai':'vocab', topic: isAiMode?topic:'' });
+        Drafts.remove('essay');
       } catch(e) {
         const raw = e.message || '';
         let msg = '❌ 批改失敗', detail = '';
@@ -4740,10 +4795,17 @@ Views.aiAsk = {
     const resultArea= document.getElementById('aiask-result-area');
     const submitBtn = document.getElementById('aiask-submit-btn');
 
+    const askDraft = Drafts.get('aiAsk');
+    if (textarea && askDraft) {
+      textarea.value = askDraft.slice(0, 800);
+      charCount.textContent = `${textarea.value.length} / 800`;
+    }
+
     textarea?.addEventListener('input', () => {
       const len = textarea.value.length;
       charCount.textContent = `${len} / 800`;
       charCount.style.color = len > 720 ? 'var(--danger)' : 'var(--text-muted)';
+      Drafts.save('aiAsk', textarea.value);
     });
 
     submitBtn?.addEventListener('click', async () => {
@@ -4780,6 +4842,7 @@ Views.aiAsk = {
         if (!answer) throw (lastErr || new Error('API_ERROR'));
         const id = this._makeId();
         DB.addAiAskEntry({ id, question: q, answer, ts: Date.now() });
+        Drafts.remove('aiAsk');
 
         resultArea.innerHTML = `
           <div class="aiask-answer-box">
@@ -6305,7 +6368,7 @@ Views.settings = {
       const btn = e.currentTarget;
       btn.disabled = true; btn.textContent = '登入中…';
       try {
-        await GDrive.signIn();
+        await Tasks.run('google-signin', () => GDrive.signIn(), { exclusive: true });
         showToast('✓ Google 登入完成；雲端同步將在背景執行', 3000);
         this.render(container);
 
@@ -6316,7 +6379,7 @@ Views.settings = {
         });
         GDrive.scheduleStudyStreakSync(500);
       } catch(err) {
-        let msg = '登入失敗，請稍後再試';
+        let msg = readableError(err);
         if (err.message === 'NO_CLIENT_ID')    msg = '請先填入並儲存 OAuth Client ID';
         if (err.message === 'GIS_LOAD_FAILED') msg = 'GIS 載入失敗，請確認網路連線';
         if (err.message === 'popup_closed_by_user') msg = '登入視窗已關閉';
@@ -6331,12 +6394,12 @@ Views.settings = {
       button.disabled = true;
       button.textContent = '同步中…';
       try {
-        const result = await GDrive.syncStudyStreak({ interactive: true });
+        const result = await Tasks.run('streak-sync', () => GDrive.syncStudyStreak({ interactive: true }), { exclusive: true });
         showToast(`✓ 練習天數已同步，共 ${result.summary.totalDays} 天`, 3000);
         this.render(container);
       } catch (error) {
         StudyStreak.markPending();
-        showToast('練習天數同步失敗：' + error.message, 3500);
+        showToast('練習天數同步失敗：' + readableError(error), 4000);
         button.disabled = false;
         button.textContent = '立即同步';
       }
@@ -6355,16 +6418,14 @@ Views.settings = {
       const original = btn?.innerHTML || '';
       if (btn) btn.disabled = true;
       try {
-        const ts = await GDrive.upload({
+        const ts = await Tasks.run('drive-upload', () => GDrive.upload({
           interactive: true,
           onProgress: message => { if (btn?.isConnected) btn.textContent = message; }
-        });
+        }), { exclusive: true });
         showToast('✓ 備份已上傳至 Google Drive（' + ts + '）');
         this.render(container);
       } catch(err) {
-        if (err.message === 'NOT_SIGNED_IN')  showToast('請先登入 Google', 3000);
-        else if (err.message === 'TOKEN_EXPIRED') { showToast('需要 Google 重新確認授權，請再按一次操作', 3500); this.render(container); }
-        else showToast('上傳失敗：' + err.message, 3000);
+        showToast('上傳失敗：' + readableError(err), 5000);
       } finally {
         if (btn?.isConnected) { btn.disabled = false; btn.innerHTML = original; }
       }
@@ -6376,10 +6437,10 @@ Views.settings = {
       if (btn) btn.disabled = true;
       const original = btn?.innerHTML || '';
       try {
-        const files = await GDrive.listBackups({
+        const files = await Tasks.run('drive-list', () => GDrive.listBackups({
           interactive: true,
           onProgress: message => { if (btn?.isConnected) btn.textContent = message; }
-        });
+        }), { exclusive: true });
         if (!files.length) { showToast('雲端尚無備份，請先上傳', 3000); if (btn) btn.disabled=false; return; }
         const rows = files.map((f, i) => {
           const ts  = f.createdTime ? new Date(f.createdTime).toLocaleString('zh-TW') : '—';
@@ -6412,10 +6473,10 @@ Views.settings = {
             const originalLabel = b.innerHTML;
             document.querySelectorAll('.fb-slot-btn').forEach(x => x.disabled = true);
             try {
-              const data = await GDrive.downloadFile(fileId, {
+              const data = await Tasks.run('drive-download', () => GDrive.downloadFile(fileId, {
                 interactive: true,
                 onProgress: message => { if (b.isConnected) b.textContent = message; }
-              });
+              }), { exclusive: true });
               Modal.show(`<div class="modal-handle"></div>
                 <div class="modal-title">套用備份</div>
                 <p style="font-size:13px;color:var(--text-muted);margin-bottom:14px">
@@ -6432,15 +6493,15 @@ Views.settings = {
                 const buttons = [...document.querySelectorAll('#gd-dl-overwrite,#gd-dl-merge,#gd-dl-cancel2')];
                 buttons.forEach(button => button.disabled = true);
                 try {
-                  await GDrive.applyDownload(data, mode, {
+                  await Tasks.run('backup-restore', () => GDrive.applyDownload(data, mode, {
                     prevalidated: true,
                     onProgress: message => { if (actionButton?.isConnected) actionButton.textContent = message; }
-                  });
+                  }), { exclusive: true });
                   Modal.hide();
                   showToast('✓ 備份已還原至本機');
                   this.render(container);
                 } catch (error) {
-                  showToast('還原失敗：' + error.message, 3500);
+                  showToast('還原失敗：' + readableError(error), 5000);
                   buttons.forEach(button => button.disabled = false);
                 }
               };
@@ -6449,15 +6510,12 @@ Views.settings = {
               document.getElementById('gd-dl-cancel2').addEventListener('click', () => Modal.hide());
             } catch(err) {
               if (b.isConnected) b.innerHTML = originalLabel;
-              if (err.message === 'TOKEN_EXPIRED') { Modal.hide(); showToast('需要 Google 重新確認授權，請再按一次操作', 3500); this.render(container); }
-              else { showToast('下載失敗：' + err.message, 3000); Modal.hide(); }
+              showToast('下載失敗：' + readableError(err), 5000); Modal.hide();
             }
           });
         });
       } catch(err) {
-        if (err.message === 'NOT_SIGNED_IN')   showToast('請先登入 Google');
-        else if (err.message === 'TOKEN_EXPIRED') { showToast('需要 Google 重新確認授權，請再按一次操作', 3500); this.render(container); }
-        else showToast('讀取失敗：' + err.message, 3000);
+        showToast('讀取失敗：' + readableError(err), 5000);
       }
       if (btn?.isConnected) { btn.disabled = false; btn.innerHTML = original; }
     });
@@ -6492,16 +6550,16 @@ Views.settings = {
           const originalLabel = button.innerHTML;
           document.querySelectorAll('.local-recovery-item').forEach(itemButton => itemButton.disabled = true);
           try {
-            await GDrive.applyDownload(item.payload, 'overwrite', {
+            await Tasks.run('recovery-restore', () => GDrive.applyDownload(item.payload, 'overwrite', {
               onProgress: message => { if (button.isConnected) button.textContent = message; }
-            });
+            }), { exclusive: true });
             Modal.hide();
             showToast('✓ 已還原本機復原點');
             this.render(container);
           } catch (error) {
             if (button.isConnected) button.innerHTML = originalLabel;
             document.querySelectorAll('.local-recovery-item').forEach(itemButton => itemButton.disabled = false);
-            showToast('還原失敗：' + error.message, 3500);
+            showToast('還原失敗：' + readableError(error), 5000);
           }
         });
       });
@@ -6543,7 +6601,21 @@ Views.settings = {
 document.addEventListener('DOMContentLoaded', async () => {
   await AppStorage.init();
   StudyStreak.migrateFromHistories(getStudyHistorySources(), { markPending: true });
-  await AppUpdater.register();
+  void AppUpdater.register();
+
+  const storageBanner = document.getElementById('storage-banner');
+  const updateStorageBanner = () => {
+    const status=AppStorage.getStatus();
+    if (storageBanner) storageBanner.hidden = status.failed === 0;
+  };
+  window.addEventListener('vocabulary-storage', updateStorageBanner);
+  document.getElementById('retry-storage-btn')?.addEventListener('click', async event => {
+    const button=event.currentTarget;button.disabled=true;button.textContent='儲存中…';
+    try { await AppStorage.retryFailed();showToast('✓ 資料已重新儲存'); }
+    catch(error) { showToast(readableError(error),5000); }
+    finally { button.disabled=false;button.textContent='重新儲存';updateStorageBanner(); }
+  });
+  updateStorageBanner();
 
   // Keep the device subscription, time zone and next trigger in sync whenever
   // the PWA is opened. Permission is requested only from the Settings button.
@@ -6622,7 +6694,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
   }, 0);
 
-  // V7.2.3 seamless reconnect:
+  // V7.3.0 seamless reconnect:
   // - The home screen is already usable before any Google work starts.
   // - Never open an account chooser/consent dialog just because the PWA launched.
   // - If a Google account was previously remembered, use the user's first normal
@@ -6662,7 +6734,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   const bootstrapGDriveInBackground = async () => {
     if (!navigator.onLine || !DB.getGDriveClientId()) return;
     try {
-      // V7.2.3: page startup must never launch Google OAuth UI. Only reuse an
+      // V7.3.0: page startup must never launch Google OAuth UI. Only reuse an
       // access token that is already valid in this PWA session. If the app was
       // fully closed, a no-UI reconnect is armed on the user's first normal tap.
       const restored = GDrive.isSignedIn() || GDrive.tryRestoreFromStorage();
@@ -6671,7 +6743,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       if (DB.getGDriveAutoSync()) {
         showToast('☁️ 背景檢查雲端備份中…', 1800);
         try {
-          const syncResult = await GDrive.autoRestoreIfCloudHasMore();
+          const syncResult = await Tasks.run('auto-cloud-sync', () => GDrive.autoRestoreIfCloudHasMore(), { exclusive: true });
           if (syncResult.status === 'restored') {
             showToast('✓ 已自動同步雲端最新備份', 2800);
             if (!Router.quizActive && !Router.essayActive && ['home', 'settings'].includes(Router.currentView)) {
@@ -6684,6 +6756,8 @@ document.addEventListener('DOMContentLoaded', async () => {
             console.info('[GDrive] Local and cloud backup are identical.');
           } else if (syncResult.status === 'safety_blocked') {
             showToast('本機復原點無法使用，為保護資料未自動覆寫', 3600);
+          } else if (syncResult.status === 'local_changed') {
+            console.info('[GDrive] Local data changed during background comparison; auto-sync deferred.');
           } else if (syncResult.status === 'skipped') {
             console.info('[GDrive] Auto-sync skipped. Local:', GDrive._formatCounts(syncResult.localCounts), 'Cloud:', GDrive._formatCounts(syncResult.cloudCounts));
           }
@@ -6725,7 +6799,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (document.visibilityState === 'hidden') {
       Views.practice?._persistPendingSession?.();
       Views.practice?._flushWrongCounts?.();
-      AppStorage.flush();
+      Drafts.flush();
+      void AppStorage.flush().catch(error => console.warn('[Storage] Deferred write failed.', error));
     }
   });
+  window.addEventListener('pagehide', () => { Drafts.flush();void AppStorage.flush().catch(()=>{}); });
 });

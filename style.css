@@ -32,6 +32,16 @@ html, body {
 
 #app { height: 100%; display: flex; flex-direction: column; overflow: hidden; }
 
+.storage-banner {
+  position: fixed; inset: max(8px, env(safe-area-inset-top, 0px)) 10px auto;
+  z-index: 10000; display: flex; align-items: center; justify-content: space-between;
+  gap: 10px; padding: 10px 12px; color: #6f1717; background: #fff0f0;
+  border: 1px solid #efb0b0; border-radius: 12px; box-shadow: var(--shadow);
+  font-size: 14px; font-weight: 700;
+}
+.storage-banner[hidden] { display: none; }
+.storage-banner button { min-height: 44px; padding: 8px 12px; border: 0; border-radius: 10px; color: white; background: var(--danger); font: inherit; }
+
 #view-container {
   flex: 1; overflow-y: auto; overflow-x: hidden;
   padding-bottom: calc(var(--nav-height) + var(--safe-bottom) + 8px);
@@ -50,7 +60,7 @@ html, body {
 .nav-btn {
   flex: 1; background: none; border: none;
   display: flex; flex-direction: column; align-items: center; gap: 3px;
-  padding: 4px 2px; cursor: pointer; color: var(--text-muted);
+  min-height: 44px; padding: 4px 2px; cursor: pointer; color: var(--text-muted);
   transition: color 0.2s; font-family: 'Nunito', sans-serif;
 }
 .nav-btn svg { width: 22px; height: 22px; }
@@ -2676,7 +2686,7 @@ html.is-offline #app { padding-top: calc(env(safe-area-inset-top, 0px) + 30px); 
   .sound-test-wide { grid-column: auto; }
 }
 
-/* ===== V7.2.3 Study streak: unified green theme + mobile layout fix ===== */
+/* ===== V7.3.0 Study streak: unified green theme + mobile layout fix ===== */
 .study-streak-card {
   position: relative;
   overflow: hidden;

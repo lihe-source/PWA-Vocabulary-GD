@@ -1,6 +1,6 @@
 import webpush from 'web-push';
 
-const SERVICE_VERSION = 'V7.2.3';
+const SERVICE_VERSION = 'V7.3.0';
 const MAX_DUE_PER_RUN = 25;
 const formatterCache = new Map();
 
@@ -236,6 +236,12 @@ async function handleRegister(request, env) {
     if (!row) return jsonResponse(request, env, { error: '提醒憑證無效', code: 'AUTH_EXPIRED' }, 401);
   } else {
     row = await env.DB.prepare('SELECT * FROM reminders WHERE endpoint = ? LIMIT 1').bind(subscription.endpoint).first();
+    // A Push endpoint is visible to the push service and must not be treated as
+    // the sole ownership proof. A client recovering a lost management token
+    // must also present the exact subscription key pair already stored in D1.
+    if (row && (row.p256dh !== subscription.p256dh || row.auth !== subscription.auth)) {
+      return jsonResponse(request, env, { error: '推播訂閱驗證失敗', code: 'SUBSCRIPTION_MISMATCH' }, 409);
+    }
     managementToken = randomToken();
   }
 

@@ -14,16 +14,28 @@ const INDEXED_KEYS = new Set([
   'importedSentences',
   'boostedWords',
   'todaySentence',
-  'geminiApiKey'
+  'geminiApiKey',
+  'vocabularyDrafts'
 ]);
 
-class StorageBridge {
+const EMPTY_INDEXED_VALUES = {
+  geminiApiKey: '',
+  vocabularyDrafts: '{}',
+  todaySentence: 'null'
+};
+
+export class StorageBridge {
   constructor() {
     this.cache = new Map();
     this.db = null;
     this.ready = false;
     this.pending = new Set();
     this.fallback = false;
+    this.revision = 0;
+    this.diskRevision = '';
+    this.errors = new Map();
+    this.tail = Promise.resolve();
+    this.batchActive = false;
 
     try {
       for (let i = 0; i < localStorage.length; i++) {
@@ -45,6 +57,7 @@ class StorageBridge {
       // on iOS/PWA startup, especially after the OS has suspended the app.
       const records = await this._getAllRecords();
       const recordMap = new Map(records.map(record => [record.key, record]));
+      this.diskRevision = recordMap.get('_revision')?.value || '';
       const migrations = [];
 
       for (const key of INDEXED_KEYS) {
@@ -66,13 +79,19 @@ class StorageBridge {
       // Remove legacy OAuth access tokens left by V6.6. Account identity remains remembered.
       this._localRemove('gdriveToken');
       this._localRemove('gdriveExpiry');
-      try { sessionStorage.removeItem('gdriveToken'); sessionStorage.removeItem('gdriveExpiry'); } catch {}
+      // Session tokens belong to the active login. Never delete them during migration.
       this._localSet('storageSchemaVersion', '8');
       this._localSet('storageMigratedAt', new Date().toISOString());
       this.ready = true;
+      if (typeof window !== 'undefined' && typeof BroadcastChannel !== 'undefined') {
+        this.channel = new BroadcastChannel('vocabulary-v7-storage');
+        this.channel.onmessage = () => { void this.refreshFromDisk().catch(error => this._failure('refresh', error)); };
+        window.addEventListener('storage', event => { if (event.key && !INDEXED_KEYS.has(event.key)) this.cache.delete(event.key); });
+      }
       return this.getStatus();
     } catch (error) {
       console.warn('[StorageBridge] IndexedDB unavailable; using localStorage fallback.', error);
+      this.db = null;
       this.fallback = true;
       this.ready = true;
       return this.getStatus();
@@ -83,7 +102,10 @@ class StorageBridge {
     return {
       ready: this.ready,
       mode: this.db && !this.fallback ? 'indexeddb' : 'localstorage-fallback',
-      schemaVersion: 8
+      schemaVersion: 8,
+      pending: this.pending.size,
+      failed: this.errors.size,
+      revision: this.revision
     };
   }
 
@@ -94,61 +116,102 @@ class StorageBridge {
     return value;
   }
 
+  _emit() {
+    if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent('vocabulary-storage', {detail:this.getStatus()}));
+  }
+
+  _failure(key, error, retry) { this.errors.set(key, {error,retry}); this._emit(); }
+
   setItem(key, value) {
+    if (this.batchActive && INDEXED_KEYS.has(key)) throw new Error('TASK_ALREADY_RUNNING');
     const stringValue = String(value);
-    this.cache.set(key, stringValue);
+    const previous = this.getItem(key);
+    if (previous === stringValue) return;
+    this.revision++;
     if (INDEXED_KEYS.has(key) && this.db && !this.fallback) {
-      this._queue(this._putRecord(key, stringValue));
-      this._localRemove(key);
+      // Synchronous callers see a pending value; a failed commit restores it.
+      this.cache.set(key, stringValue);
+      const run = async () => {
+        try { await this._putRecords([[key,stringValue]]); this.errors.delete(key); this._localRemove(key); }
+        catch (error) {
+          if (this.cache.get(key) === stringValue) {
+            if (previous === null) this.cache.delete(key); else this.cache.set(key,previous);
+          }
+          this._failure(key,error,()=>this.setItem(key,stringValue));
+          throw error;
+        } finally { this._emit(); }
+      };
+      const pending = this.tail.then(run);
+      this.tail = pending.catch(()=>{});
+      this._queue(pending);
       return;
     }
-    this._localSet(key, stringValue);
+    try { localStorage.setItem(key,stringValue); this.cache.set(key,stringValue); this.errors.delete(key); }
+    catch(error) { this._failure(key,error,()=>this.setItem(key,stringValue)); throw error; }
   }
 
   removeItem(key) {
-    this.cache.delete(key);
-    this._localRemove(key);
-    if (INDEXED_KEYS.has(key) && this.db && !this.fallback) {
-      this._queue(this._deleteRecord(key));
+    if (INDEXED_KEYS.has(key)) {
+      // An empty stored value is represented consistently in both stores.
+      this.setItem(key, EMPTY_INDEXED_VALUES[key] ?? '[]');
+      return;
     }
+    localStorage.removeItem(key);this.cache.delete(key);this.revision++;
   }
 
-  clear() {
-    this.cache.clear();
-    try { localStorage.clear(); } catch {}
-    if (this.db && !this.fallback) {
-      const tx = this.db.transaction([KV_STORE, SNAPSHOT_STORE], 'readwrite');
-      tx.objectStore(KV_STORE).clear();
-      tx.objectStore(SNAPSHOT_STORE).clear();
-    }
+  async clear() {
+    await this.flush();
+    if (this.db && !this.fallback) await new Promise((resolve,reject)=>{
+      const tx=this.db.transaction([KV_STORE,SNAPSHOT_STORE],'readwrite');
+      tx.objectStore(KV_STORE).clear();tx.objectStore(SNAPSHOT_STORE).clear();
+      tx.oncomplete=resolve;tx.onerror=tx.onabort=()=>reject(tx.error);
+    });
+    this.cache.clear();localStorage.clear();this.diskRevision='';this.revision++;
+    this.channel?.postMessage('changed');
   }
 
   async flush() {
-    await Promise.allSettled([...this.pending]);
+    while(this.pending.size) await Promise.allSettled([...this.pending]);
+    if(this.errors.size) throw this.errors.values().next().value.error;
   }
 
-  async setItemsBatch(entries) {
+  async retryFailed() {
+    const failed=[...this.errors.entries()];
+    for (const [key, item] of failed) if(item.retry) { this.errors.delete(key);item.retry(); }
+    await this.flush();
+  }
+
+  async refreshFromDisk() {
+    if(this.pending.size || this.batchActive || this.errors.size || !this.db) return false;
+    const localRevision = this.revision;
+    const records=await this._getAllRecords();
+    if (localRevision !== this.revision || this.pending.size || this.batchActive) return false;
+    const revision=records.find(x=>x.key==='_revision')?.value || '';
+    if(revision===this.diskRevision) return false;
+    for(const key of INDEXED_KEYS) this.cache.delete(key);
+    for(const record of records) if(INDEXED_KEYS.has(record.key)) this.cache.set(record.key,record.value);
+    this.diskRevision=revision;this.revision++;this._emit();return true;
+  }
+
+  async setItemsBatch(entries, {expectedRevision} = {}) {
+    if(this.batchActive) throw new Error('TASK_ALREADY_RUNNING');
+    await this.flush();
+    if(expectedRevision !== undefined && expectedRevision !== this.revision) throw new Error('LOCAL_DATA_CHANGED');
     const pairs = Array.isArray(entries) ? entries : Object.entries(entries || {});
     if (!pairs.length) return;
-
-    const indexed = [];
-    const local = [];
-    for (const [key, value] of pairs) {
-      const stringValue = String(value);
-      this.cache.set(key, stringValue);
-      if (INDEXED_KEYS.has(key) && this.db && !this.fallback) indexed.push([key, stringValue]);
-      else local.push([key, stringValue]);
-    }
-
-    for (const [key, value] of local) this._localSet(key, value);
-    if (indexed.length) {
-      await this._putRecords(indexed);
-      for (const [key] of indexed) this._localRemove(key);
-    }
+    // Restore transactions must use IndexedDB, including study days.
+    if (!this.db || this.fallback) throw new Error('SNAPSHOT_UNAVAILABLE');
+    if (pairs.some(([key])=>!INDEXED_KEYS.has(key))) throw new Error('BATCH_KEY_NOT_INDEXED');
+    this.batchActive=true;
+    try {
+      await this._putRecords(pairs.map(([key,value])=>[key,String(value)]));
+      for(const [key,value] of pairs) {this.cache.set(key,String(value));this._localRemove(key);}
+      this.revision++;this._emit();
+    } finally {this.batchActive=false;}
   }
 
   async createRecoverySnapshot(payload, reason = 'manual') {
-    if (!this.db || this.fallback) return null;
+    if (!this.db || this.fallback) throw new Error('SNAPSHOT_UNAVAILABLE');
     const id = `${Date.now()}-${crypto.randomUUID?.() || Math.random().toString(36).slice(2)}`;
     const record = {
       id,
@@ -179,7 +242,7 @@ class StorageBridge {
 
   _queue(promise) {
     this.pending.add(promise);
-    promise.finally(() => this.pending.delete(promise));
+    promise.then(() => this.pending.delete(promise), () => this.pending.delete(promise));
   }
 
   _open() {
@@ -190,7 +253,7 @@ class StorageBridge {
         if (!db.objectStoreNames.contains(KV_STORE)) db.createObjectStore(KV_STORE, { keyPath: 'key' });
         if (!db.objectStoreNames.contains(SNAPSHOT_STORE)) db.createObjectStore(SNAPSHOT_STORE, { keyPath: 'id' });
       };
-      req.onsuccess = () => resolve(req.result);
+      req.onsuccess = () => { req.result.onversionchange=()=>{req.result.close();this.db=null;this.fallback=true;this._emit();}; resolve(req.result); };
       req.onerror = () => reject(req.error);
       req.onblocked = () => reject(new Error('INDEXEDDB_BLOCKED'));
     });
@@ -206,11 +269,11 @@ class StorageBridge {
   }
 
   _getAllRecords() {
-    return new Promise(resolve => {
+    return new Promise((resolve,reject) => {
       const tx = this.db.transaction(KV_STORE, 'readonly');
       const req = tx.objectStore(KV_STORE).getAll();
       req.onsuccess = () => resolve(req.result || []);
-      req.onerror = () => resolve([]);
+      req.onerror = () => reject(req.error);
     });
   }
 
@@ -219,10 +282,16 @@ class StorageBridge {
       const tx = this.db.transaction(KV_STORE, 'readwrite');
       const store = tx.objectStore(KV_STORE);
       const updatedAt = new Date().toISOString();
-      for (const [key, value] of entries) store.put({ key, value, updatedAt });
-      tx.oncomplete = resolve;
-      tx.onerror = () => reject(tx.error);
-      tx.onabort = () => reject(tx.error);
+      const revision = crypto.randomUUID?.() || `${Date.now()}-${Math.random()}`;
+      let conflict=false;
+      const req=store.get('_revision');
+      req.onsuccess=()=>{
+        if ((req.result?.value || '') !== this.diskRevision) { conflict=true;tx.abort();return; }
+        for (const [key, value] of entries) store.put({ key, value, updatedAt });
+        store.put({key:'_revision',value:revision,updatedAt});
+      };
+      tx.oncomplete = () => {this.diskRevision=revision;this.channel?.postMessage('changed');resolve();};
+      tx.onerror = tx.onabort = () => reject(conflict ? new Error('STORAGE_CONFLICT') : tx.error || new Error('STORAGE_WRITE_FAILED'));
     });
   }
 

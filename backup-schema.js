@@ -44,6 +44,55 @@ function hashStable(value) {
   return (`00000000${(hash >>> 0).toString(16)}`).slice(-8);
 }
 
+function stable(value) {
+  let result = '';
+  walkStable(value, chunk => { result += chunk; });
+  return result;
+}
+
+function keyOf(value, fallback = '') {
+  if (value === null || typeof value !== 'object') return String(value);
+  return String(value.id ?? value.ts ?? value.backupId ?? fallback);
+}
+
+function includesByKey(local, cloud, key, compatible = (a, b) => stable(a) === stable(b)) {
+  const index = new Map(cloud.map((item, i) => [key(item, i), item]));
+  return local.every((item, i) => {
+    const cloudItem = index.get(key(item, i));
+    return cloudItem !== undefined && compatible(item, cloudItem);
+  });
+}
+
+function containsCollections(local, cloud) {
+  const wordKey = word => String(word?.english || word?.wordEn || '').trim().toLowerCase();
+  const words = includesByKey(local.words, cloud.words, wordKey);
+  const history = includesByKey(local.history, cloud.history, item => String(item?.date || ''), (a, b) =>
+    Number(b?.total || 0) >= Number(a?.total || 0) &&
+    Number(b?.correct || 0) >= Number(a?.correct || 0) &&
+    Number(b?.wrong || 0) >= Number(a?.wrong || 0) &&
+    safeArray(a?.wrongWordDetails).every(localWrong => safeArray(b?.wrongWordDetails)
+      .some(cloudWrong => String(cloudWrong?.english || '').toLowerCase() === String(localWrong?.english || '').toLowerCase()))
+  );
+  const sessionsContained = (localGroups, cloudGroups) => includesByKey(localGroups, cloudGroups,
+    group => String(group?.date || ''), (a, b) => includesByKey(safeArray(a?.sessions), safeArray(b?.sessions),
+      (session, i) => keyOf(session, `${stable(session).slice(0, 160)}:${i}`),
+      (localSession, cloudSession) => stable(localSession) === stable(cloudSession)));
+  const studyDays = includesByKey(local.studyDays, cloud.studyDays, day => String(day?.date || ''), (a, b) =>
+    safeArray(a?.eventIds).every(id => safeArray(b?.eventIds).includes(id)) &&
+    safeArray(a?.activities).every(type => safeArray(b?.activities).includes(type)) &&
+    Number(b?.sessionCount || 0) >= Number(a?.sessionCount || 0)
+  );
+  return words &&
+    history &&
+    includesByKey(local.sentences, cloud.sentences, (item, i) => keyOf(item, `${item?.word || ''}|${item?.date || ''}|${i}`)) &&
+    includesByKey(local.imported, cloud.imported, (item, i) => keyOf(item, `${item?.word || ''}|${item?.english || ''}|${i}`)) &&
+    local.boosted.every(id => cloud.boosted.includes(id)) &&
+    sessionsContained(local.readingQuizHistory, cloud.readingQuizHistory) &&
+    sessionsContained(local.essayHistory, cloud.essayHistory) &&
+    includesByKey(local.aiAskHistory, cloud.aiAskHistory, (item, i) => keyOf(item, i)) &&
+    studyDays;
+}
+
 function safeArray(value) {
   return Array.isArray(value) ? value : [];
 }
@@ -106,10 +155,18 @@ export const BackupSchema = {
 
   validate(data) {
     if (!data || typeof data !== 'object') return { valid: false, reason: 'INVALID_OBJECT' };
-    const collections = this.normalize(data);
-    const hasRecognizedCollection = COLLECTION_KEYS.some(key => Array.isArray((data.collections || data)[key]));
-    if (!hasRecognizedCollection) return { valid: false, reason: 'NO_COLLECTIONS' };
+    if (Array.isArray(data)) return { valid: false, reason: 'INVALID_OBJECT' };
+    const source = data.collections && typeof data.collections === 'object' ? data.collections : data;
     const schemaVersion = Number(data.schemaVersion) || 0;
+    if (schemaVersion > this.schemaVersion) return { valid: false, reason: 'UNSUPPORTED_VERSION' };
+    if (schemaVersion >= 8) {
+      const malformed = COLLECTION_KEYS.find(key => !Array.isArray(source[key]));
+      if (malformed) return { valid: false, reason: `INVALID_COLLECTION_${malformed.toUpperCase()}` };
+      if (!data.payloadChecksum) return { valid: false, reason: 'CHECKSUM_MISSING' };
+    }
+    const collections = this.normalize(data);
+    const hasRecognizedCollection = COLLECTION_KEYS.some(key => Array.isArray(source[key]));
+    if (!hasRecognizedCollection) return { valid: false, reason: 'NO_COLLECTIONS' };
     if (schemaVersion >= 7 && data.payloadChecksum) {
       const actual = schemaVersion >= 8 ? this.checksum(collections) : this.legacyChecksum(collections);
       if (actual !== data.payloadChecksum) return { valid: false, reason: 'CHECKSUM_MISMATCH', actual };
@@ -175,14 +232,18 @@ export const BackupSchema = {
     const cloudHash = compareLegacy
       ? this.legacyChecksum(cloudData)
       : (cloudData?.payloadChecksum || this.checksum(cloudData));
+    const localCollections = this.normalize(localData);
+    const cloudCollections = this.normalize(cloudData);
+    const cloudContainsLocal = containsCollections(localCollections, cloudCollections);
     return {
       localCounts,
       cloudCounts,
       localHash,
       cloudHash,
       same: sameCounts && localHash === cloudHash,
-      conflict: (cloudLess && cloudMore) || (sameCounts && localHash !== cloudHash),
-      cloudIsStrictSuperset: cloudMore && !cloudLess
+      cloudContainsLocal,
+      conflict: !cloudContainsLocal && localHash !== cloudHash,
+      cloudIsStrictSuperset: cloudContainsLocal && cloudMore && !cloudLess
     };
   }
 };
