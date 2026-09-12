@@ -1,23 +1,23 @@
-import { AppStorage } from './storage.js?v=V7_4_1';
-import { BackupSchema } from './backup-schema.js?v=V7_4_1';
-import { VersionManager } from './version-manager.js?v=V7_4_1';
-import { TrendChart } from './chart-renderer.js?v=V7_4_1';
-import { PUSH_CONFIG } from './push-config.js?v=V7_4_1';
-import { ReminderManager, reminderErrorMessage } from './reminder-manager.js?v=V7_4_1';
-import { StudyStreakManager, STUDY_ACTIVITY_TYPES, STUDY_DAYS_CSV_HEADER, mergeStudyDays } from './study-streak.js?v=V7_4_1';
-import { Tasks } from './task-manager.js?v=V7_4_1';
-import { request as netRequest, readableError } from './network.js?v=V7_4_1';
-import { BackupWorker } from './backup-worker-client.js?v=V7_4_1';
-import { DraftManager } from './draft-manager.js?v=V7_4_1';
+import { AppStorage } from './storage.js?v=V7_4_2';
+import { BackupSchema } from './backup-schema.js?v=V7_4_2';
+import { VersionManager } from './version-manager.js?v=V7_4_2';
+import { TrendChart } from './chart-renderer.js?v=V7_4_2';
+import { PUSH_CONFIG } from './push-config.js?v=V7_4_2';
+import { ReminderManager, reminderErrorMessage } from './reminder-manager.js?v=V7_4_2';
+import { StudyStreakManager, STUDY_ACTIVITY_TYPES, STUDY_DAYS_CSV_HEADER, mergeStudyDays } from './study-streak.js?v=V7_4_2';
+import { Tasks } from './task-manager.js?v=V7_4_2';
+import { request as netRequest, readableError } from './network.js?v=V7_4_2';
+import { BackupWorker } from './backup-worker-client.js?v=V7_4_2';
+import { DraftManager } from './draft-manager.js?v=V7_4_2';
 
 // ===========================
-// 英文單字複習 PWA - app.js V7_4_1
-// V7.4.1：主畫面零阻塞、Google Drive 無打擾自動續登入與單一步驟授權
+// 英文單字複習 PWA - app.js V7_4_2
+// V7.4.2：主畫面零阻塞、Google Drive 無打擾自動續登入與單一步驟授權
 // ===========================
 
-const APP_VERSION = 'V7_4_1';
-const APP_DISPLAY_VERSION = 'V7.4.1';
-const APP_CACHE_VERSION = 'Voc-PWA-V7_4_1';
+const APP_VERSION = 'V7_4_2';
+const APP_DISPLAY_VERSION = 'V7.4.2';
+const APP_CACHE_VERSION = 'Voc-PWA-V7_4_2';
 const Theme = {
   get() { return AppStorage.getItem('uiTheme') || 'dark'; },
   apply(mode = this.get()) {
@@ -1842,7 +1842,7 @@ const GDrive = {
   },
 
   async silentRefresh({ noUi = false } = {}) {
-    // V7.4.1: prompt:'none' is used only for best-effort reconnects that must
+    // V7.4.2: prompt:'none' is used only for best-effort reconnects that must
     // never interrupt the user with Google's account/consent dialog.
     await this._requestToken({
       promptMode: noUi ? 'none' : '',
@@ -2544,7 +2544,7 @@ Views.home = {
     }).join('');
     const googleConnected = GDrive.isSignedIn() || GDrive.hasRememberedSession();
     container.innerHTML = `
-      <div id="home-view">
+      <div class="home-layout">
         <div class="home-welcome">
           <div><h1>今天，練習一點英文</h1><p>持續學習，讓改變悄悄發生。</p></div>
           <span class="home-cloud-state ${googleConnected?'is-connected':''}">${googleConnected?'Google 已連線':'本機模式'}</span>
@@ -6712,7 +6712,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
   }, 0);
 
-  // V7.4.1 seamless reconnect:
+  // V7.4.2 seamless reconnect:
   // - The home screen is already usable before any Google work starts.
   // - Never open an account chooser/consent dialog just because the PWA launched.
   // - If a Google account was previously remembered, use the user's first normal
@@ -6752,7 +6752,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   const bootstrapGDriveInBackground = async () => {
     if (!navigator.onLine || !DB.getGDriveClientId()) return;
     try {
-      // V7.4.1: page startup must never launch Google OAuth UI. Only reuse an
+      // V7.4.2: page startup must never launch Google OAuth UI. Only reuse an
       // access token that is already valid in this PWA session. If the app was
       // fully closed, a no-UI reconnect is armed on the user's first normal tap.
       const restored = GDrive.isSignedIn() || GDrive.tryRestoreFromStorage();

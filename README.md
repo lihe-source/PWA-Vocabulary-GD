@@ -1,8 +1,11 @@
-# PWA Vocabulary GD V7.4.1
+# PWA Vocabulary GD V7.4.2
 
 手機優先的英文單字複習 PWA，整合 IndexedDB、Google Drive 備份、Gemini、跨裝置練習天數與 Cloudflare Web Push。
 
-## V7.4.1 重點
+## V7.4.2 重點
+
+- 修正重複首頁 ID 導致桌面雙重分欄；最大內容寬度調整為 1200px。
+- 標題列與版本標籤防溢出，中等視窗改為兩欄練習卡片。
 
 - 全新森林綠 UI、新書本 V icon、固定品牌列與貼底導覽。
 - 深色、淺色及跟隨系統主題，首次使用預設深色。
@@ -20,7 +23,7 @@
 - IndexedDB：`pwa_vocabulary_v7`
 - Backup Schema：V8
 - 舊 V7 備份：可相容還原
-- Service Worker Cache：`Voc-PWA-V7_4_1`
+- Service Worker Cache：`Voc-PWA-V7_4_2`
 - Google Access Token：僅保存於 `sessionStorage`
 
 ## 驗證
@@ -30,4 +33,4 @@ npm run check
 npm test
 ```
 
-目前自動化測試：36/36 通過。部署步驟請見 `DEPLOY_V7_4_1.md`。
+目前自動化測試：36/36 通過。部署步驟請見 `DEPLOY_V7_4_2.md`。

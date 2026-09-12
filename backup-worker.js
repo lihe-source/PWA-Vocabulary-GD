@@ -1,4 +1,4 @@
-import { BackupSchema } from './backup-schema.js?v=V7_4_1';
+import { BackupSchema } from './backup-schema.js?v=V7_4_2';
 
 self.onmessage = ({data}) => {
   const {id, action, payload} = data || {};
