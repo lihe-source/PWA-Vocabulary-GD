@@ -1,15 +1,15 @@
 {
   "id": "./",
-  "name": "英文單字複習 V7.4.2",
+  "name": "英文單字複習 V7.5.0",
   "short_name": "英文複習",
-  "description": "支援跨裝置連續練習天數、每日推播提醒、Gemini AI、IndexedDB 與 Google Drive 備份的英文單字複習 PWA V7.4.2",
+  "description": "支援跨裝置連續練習天數、每日推播提醒、Gemini AI、IndexedDB 與 Google Drive 備份的英文單字複習 PWA V7.5.0",
   "start_url": "./index.html",
   "scope": "./",
   "display": "standalone",
   "display_override": ["standalone", "minimal-ui"],
   "background_color": "#0f2d1f",
   "theme_color": "#1a7a4a",
-  "orientation": "portrait",
+  "orientation": "any",
   "lang": "zh-TW",
   "icons": [
     {

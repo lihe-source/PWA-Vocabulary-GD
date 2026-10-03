@@ -1,0 +1,20 @@
+name = "vocabulary-google-auth"
+main = "cloud-auth-worker.js"
+compatibility_date = "2026-09-01"
+
+[triggers]
+crons = ["0 18 * * *"]
+
+[vars]
+APP_URL = "https://lihe-source.github.io/PWA-Vocabulary-GD/"
+ALLOWED_ORIGINS = "https://lihe-source.github.io"
+GOOGLE_CLIENT_ID = "REPLACE_WITH_EXISTING_GOOGLE_WEB_CLIENT_ID"
+SESSION_IDLE_DAYS = "30"
+
+[[d1_databases]]
+binding = "AUTH_DB"
+database_name = "vocabulary-google-auth"
+database_id = "REPLACE_WITH_NEW_AUTH_D1_DATABASE_ID"
+
+# Store GOOGLE_CLIENT_SECRET and TOKEN_ENCRYPTION_KEY using Worker Secrets.
+# Do not place either secret in this file or GitHub.
