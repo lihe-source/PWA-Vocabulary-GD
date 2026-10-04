@@ -4,23 +4,23 @@ import { readFile } from 'node:fs/promises';
 
 const text = name => readFile(new URL(`./${name}`, import.meta.url), 'utf8');
 
-test('all public app surfaces use the V7.5.0 cache/version', async () => {
+test('all public app surfaces use the V7.4.2 cache/version', async () => {
   const [app, html, sw, version, manifest] = await Promise.all([
     text('app.js'), text('index.html'), text('sw.js'), text('version.json'), text('manifest.json')
   ]);
-  assert.match(app, /APP_VERSION = 'V7_5_0'/);
-  assert.match(html, /app\.js\?v=V7_5_0/);
-  assert.match(sw, /Voc-PWA-V7_5_0/);
-  assert.match(sw, /study-streak\.js\?v=V7_5_0/);
-  assert.match(sw, /backup-worker\.js\?v=V7_5_0/);
-  assert.match(sw, /task-manager\.js\?v=V7_5_0/);
+  assert.match(app, /APP_VERSION = 'V7_4_2'/);
+  assert.match(html, /app\.js\?v=V7_4_2/);
+  assert.match(sw, /Voc-PWA-V7_4_2/);
+  assert.match(sw, /study-streak\.js\?v=V7_4_2/);
+  assert.match(sw, /backup-worker\.js\?v=V7_4_2/);
+  assert.match(sw, /task-manager\.js\?v=V7_4_2/);
   assert.equal(JSON.parse(version).schemaVersion, 8);
-  assert.match(JSON.parse(manifest).name, /V7\.5\.0/);
+  assert.match(JSON.parse(manifest).name, /V7\.4\.2/);
 });
 
 test('study streak UI uses the green theme and a stable mobile settings layout', async () => {
   const [app, style] = await Promise.all([text('app.js'), text('style.css')]);
-  const streakSection = style.split('/* ===== V7.5.0 Study streak')[1]
+  const streakSection = style.split('/* ===== V7.4.2 Study streak')[1]
     ?.split('/* ===== V7.1.0')[0] || '';
 
   assert.match(streakSection, /margin:\s*12px/);
@@ -35,19 +35,20 @@ test('study streak UI uses the green theme and a stable mobile settings layout',
 });
 
 test('all four completed practice paths record a qualifying activity', async () => {
-  const app = await text('data-repository.js');
+  const app = await text('app.js');
   for (const activity of ['WORD_QUIZ', 'READING_QUIZ', 'ESSAY_REVIEW', 'AI_ASK']) {
     assert.match(app, new RegExp(`recordStudyActivity\\(STUDY_ACTIVITY_TYPES\\.${activity}`));
   }
 });
 
-test('all CSV and Drive backups include study days', async () => {
-  const {exportCsvFiles,COLLECTION_STORAGE_KEYS}=await import('./data-operations.js');
-  const files=exportCsvFiles({studyDays:[{date:'2026-10-03',events:[]}]},'2026-10-03','20261003');
-  assert.ok(files.some(file=>file.name==='study_days_20261003.csv'));
-  assert.equal(COLLECTION_STORAGE_KEYS.studyDays,'studyActivityDays');
-  const app=await text('app.js');assert.ok(app.includes('vocab_study_streak.json'));
+test('settings backup and Google Drive payload include study days', async () => {
+  const app = await text('app.js');
+  assert.match(app, /studyDays: StudyStreak\.getDays\(\)/);
+  assert.match(app, /study_days_\$\{compactDateTag\}\.csv/);
+  assert.match(app, /vocab_study_streak\.json/);
+  assert.match(app, /gd-streak-sync-btn/);
 });
+
 
 test('Google Drive startup and backup work stay off the first-paint critical path', async () => {
   const app = await text('app.js');
@@ -60,7 +61,7 @@ test('Google Drive startup and backup work stay off the first-paint critical pat
   const uploadBody = app.slice(uploadStart, uploadEnd);
   assert.doesNotMatch(uploadBody, /await\s+this\.syncStudyStreak/);
   assert.match(uploadBody, /scheduleStudyStreakSync/);
-  assert.ok(!app.includes('armSeamlessGoogleReconnect'));
+  assert.match(app, /preloadGIS\(\)/);
 });
 
 test('restore uses batched IndexedDB writes and visible UI yielding', async () => {

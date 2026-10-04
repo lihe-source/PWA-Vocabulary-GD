@@ -9,7 +9,7 @@ export class TaskManager {
     if (typeof window !== 'undefined' && typeof BroadcastChannel !== 'undefined') {
       this.channel = new BroadcastChannel('vocabulary-v7-tasks');
       this.channel.onmessage = ({data}) => {
-        if (data?.id !== this.id) this.remote.set(data.id, {busy: !!data.busy, foreground: !!data.foreground, time: Date.now()});
+        if (data?.id !== this.id) this.remote.set(data.id, {busy: !!data.busy, time: Date.now()});
       };
       this.timer = setInterval(() => this._emit(), 10000);
       window.addEventListener('pagehide', () => this.channel.postMessage({id:this.id,busy:false}));
@@ -18,18 +18,15 @@ export class TaskManager {
   get busy() {
     return this.active.size > 0 || [...this.remote.values()].some(v => v.busy && Date.now()-v.time < 30000);
   }
-  get foregroundBusy() {
-    return [...this.active.values()].some(task=>!task.background) ||
-      [...this.remote.values()].some(task=>task.foreground && Date.now()-task.time<30000);
-  }
   _emit() {
-    this.channel?.postMessage({id:this.id,busy:this.active.size>0,foreground:[...this.active.values()].some(task=>!task.background)});
+    this.channel?.postMessage({id:this.id,busy:this.active.size>0});
     for (const listener of this.listeners) listener(this);
   }
-  start(label, {exclusive = false, background = false} = {}) {
-    if ((exclusive && this.foregroundBusy) || this.exclusiveKey || (background && this.foregroundBusy)) throw new Error('TASK_ALREADY_RUNNING');
+  start(label, {exclusive = false} = {}) {
+    const remoteBusy = [...this.remote.values()].some(v => v.busy && Date.now()-v.time < 30000);
+    if ((exclusive && (this.active.size > 0 || remoteBusy)) || this.exclusiveKey) throw new Error('TASK_ALREADY_RUNNING');
     const key = Symbol(label);
-    this.active.set(key, {label,background}); this._emit();
+    this.active.set(key, label); this._emit();
     if (exclusive) this.exclusiveKey = key;
     let ended = false;
     return () => { if (!ended) { ended=true;this.active.delete(key);if(this.exclusiveKey===key)this.exclusiveKey=null;this._emit(); } };

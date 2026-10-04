@@ -11,7 +11,7 @@ function resetWorker(error) {
 function getWorker() {
   if (worker) return worker;
   if (typeof Worker === 'undefined') throw new Error('WORKER_UNAVAILABLE');
-  worker=new Worker('./backup-worker.js?v=V7_5_0',{type:'module'});
+  worker=new Worker('./backup-worker.js?v=V7_4_2',{type:'module'});
   worker.onmessage=({data})=>{
     const job=pending.get(data?.id);if(!job)return;
     pending.delete(data.id);clearTimeout(job.timer);
@@ -36,11 +36,5 @@ function run(action,payload,timeout=45000) {
 export const BackupWorker={
   prepare(collections,metadata){return run('prepare',{collections,metadata});},
   parse(text){return run('parse',{text});},
-  validate(payload){return run('validate',payload);},
-  snapshot(collections,metadata){return run('snapshot',{collections,metadata});},
-  compare(local,cloud){return run('compare',{local,cloud});},
-  restore(local,incoming,mode){return run('restore',{local,incoming,mode});},
-  exportCsv(collections,dateTag,compactDateTag){return run('export-csv',{collections,dateTag,compactDateTag});},
-  importCsv(collections,files){return run('import-csv',{collections,files});},
-  parseCsv(text){return run('parse-csv',{text});}
+  validate(payload){return run('validate',payload)}
 };

@@ -28,7 +28,7 @@
 html, body {
   width: 100%; max-width: 100%;
   height: 100%; overflow: hidden;
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang TC', 'Microsoft JhengHei', 'Noto Sans CJK TC', sans-serif;
+  font-family: 'Nunito', sans-serif;
   background: var(--bg); color: var(--text);
   -webkit-font-smoothing: antialiased;
 }
@@ -84,7 +84,7 @@ html[data-theme="dark"] {
   flex: 1; background: none; border: none;
   display: flex; flex-direction: column; align-items: center; gap: 3px;
   min-height: 44px; padding: 4px 2px; cursor: pointer; color: var(--text-muted);
-  transition: color 0.2s; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang TC', 'Microsoft JhengHei', 'Noto Sans CJK TC', sans-serif;
+  transition: color 0.2s; font-family: 'Nunito', sans-serif;
 }
 .nav-btn svg { width: 22px; height: 22px; }
 .nav-btn span { font-size: 10px; font-weight: 700; letter-spacing: 0.02em; }
@@ -514,7 +514,7 @@ html[data-theme="dark"] {
   color: white;
   border: none;
   border-radius: var(--radius-sm);
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang TC', 'Microsoft JhengHei', 'Noto Sans CJK TC', sans-serif;
+  font-family: 'Nunito', sans-serif;
   font-size: 14px;
   font-weight: 800;
   cursor: pointer;
@@ -529,7 +529,7 @@ html[data-theme="dark"] {
   border: 1.5px solid var(--border);
   border-radius: var(--radius-sm);
   background: var(--bg);
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang TC', 'Microsoft JhengHei', 'Noto Sans CJK TC', sans-serif;
+  font-family: 'Nunito', sans-serif;
   font-size: 14px;
   font-weight: 700;
   color: var(--text);
@@ -578,7 +578,7 @@ html[data-theme="dark"] {
   color: white;
   border: none;
   border-radius: 20px;
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang TC', 'Microsoft JhengHei', 'Noto Sans CJK TC', sans-serif;
+  font-family: 'Nunito', sans-serif;
   font-size: 12px;
   font-weight: 800;
   cursor: pointer;
@@ -613,7 +613,7 @@ html[data-theme="dark"] {
   border: 1.5px solid var(--border);
   background: var(--bg);
   color: var(--text);
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang TC', 'Microsoft JhengHei', 'Noto Sans CJK TC', sans-serif;
+  font-family: 'Nunito', sans-serif;
   font-size: 12px;
   font-weight: 700;
   cursor: pointer;
@@ -641,7 +641,7 @@ html[data-theme="dark"] {
   border: 1px solid var(--border);
   background: transparent;
   color: var(--text-muted);
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang TC', 'Microsoft JhengHei', 'Noto Sans CJK TC', sans-serif;
+  font-family: 'Nunito', sans-serif;
   font-size: 11px;
   font-weight: 700;
   cursor: pointer;
@@ -657,7 +657,7 @@ html[data-theme="dark"] {
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang TC', 'Microsoft JhengHei', 'Noto Sans CJK TC', sans-serif;
+  font-family: 'Nunito', sans-serif;
   font-size: 12px;
   font-weight: 700;
   color: var(--text-muted);
@@ -815,7 +815,7 @@ html[data-theme="dark"] {
   width: 100%; padding: 14px;
   background: linear-gradient(135deg, #1a7a4a 0%, #1a4a8a 100%);
   color: white; border: none; border-radius: var(--radius-sm);
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang TC', 'Microsoft JhengHei', 'Noto Sans CJK TC', sans-serif; font-size: 15px; font-weight: 900;
+  font-family: 'Nunito', sans-serif; font-size: 15px; font-weight: 900;
   cursor: pointer; letter-spacing: 0.02em;
   box-shadow: 0 4px 14px rgba(26,74,138,0.3);
   transition: opacity 0.15s, transform 0.1s;
@@ -922,7 +922,7 @@ html[data-theme="dark"] {
   color: var(--primary);
   border: 2px solid var(--primary);
   border-radius: var(--radius-sm);
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang TC', 'Microsoft JhengHei', 'Noto Sans CJK TC', sans-serif;
+  font-family: 'Nunito', sans-serif;
   font-size: 15px;
   font-weight: 900;
   cursor: pointer;
@@ -1009,7 +1009,7 @@ html[data-theme="dark"] {
   border: 1.5px solid var(--border);
   background: var(--card-bg);
   color: var(--text-muted);
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang TC', 'Microsoft JhengHei', 'Noto Sans CJK TC', sans-serif;
+  font-family: 'Nunito', sans-serif;
   font-size: 12px;
   font-weight: 800;
   cursor: pointer;
@@ -1057,7 +1057,7 @@ html[data-theme="dark"] {
   border: 1.5px solid var(--border);
   border-radius: 20px;
   color: var(--text-muted);
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang TC', 'Microsoft JhengHei', 'Noto Sans CJK TC', sans-serif;
+  font-family: 'Nunito', sans-serif;
   font-size: 12px;
   font-weight: 800;
   cursor: pointer;
@@ -1730,7 +1730,7 @@ a.err-back-link {
   border: 2px solid var(--primary);
   border-radius: var(--radius-sm);
   background: white;
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang TC', 'Microsoft JhengHei', 'Noto Sans CJK TC', sans-serif;
+  font-family: 'Nunito', sans-serif;
   font-size: 15px;
   font-weight: 800;
   color: var(--primary);
@@ -1852,7 +1852,7 @@ a.err-back-link {
   border: 2px solid var(--primary);
   border-radius: var(--radius-sm);
   background: white;
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang TC', 'Microsoft JhengHei', 'Noto Sans CJK TC', sans-serif;
+  font-family: 'Nunito', sans-serif;
   font-size: 15px;
   font-weight: 800;
   color: var(--primary);
@@ -2718,7 +2718,7 @@ html.is-offline #app { padding-top: calc(env(safe-area-inset-top, 0px) + 30px); 
   .sound-test-wide { grid-column: auto; }
 }
 
-/* ===== V7.5.0 Study streak: unified green theme + mobile layout fix ===== */
+/* ===== V7.4.2 Study streak: unified green theme + mobile layout fix ===== */
 .study-streak-card {
   position: relative;
   overflow: hidden;
@@ -2946,7 +2946,7 @@ html.is-offline #app { padding-top: calc(env(safe-area-inset-top, 0px) + 30px); 
   #enable-reminder-btn { grid-column: auto; }
 }
 
-/* ===== V7.5.0 visual system ===== */
+/* ===== V7.4.2 visual system ===== */
 html, body, #app { min-height: 100%; }
 @supports (height: 100dvh) { html, body, #app { height: 100dvh; } }
 #app { padding-top: env(safe-area-inset-top, 0px); background:var(--bg); }
@@ -3061,7 +3061,7 @@ html[data-theme="dark"] .essay-stats-row:active,html[data-theme="dark"] .essay-f
   .menu-card-sub { font-size:10px; }
 }
 
-/* V7.5.0: one responsive grid within a full-width route container. */
+/* V7.4.2: one responsive grid within a full-width route container. */
 #view-container { min-height:0;width:100%; }
 #view-container > .view-enter { width:100%;max-width:1200px;margin-inline:auto; }
 #app-topbar { width:100%;gap:16px; }
@@ -3088,21 +3088,3 @@ html[data-theme="dark"] .essay-stats-row:active,html[data-theme="dark"] .essay-f
   .home-menu-grid { grid-template-columns:repeat(2,minmax(0,1fr)); }
   .home-start-card svg { width:58px;height:58px; }
 }
-
-/* V7.5.0: bounded list pages and readable service status. */
-.db-pagination{display:flex;align-items:center;justify-content:center;flex-wrap:wrap;gap:12px;padding:18px 0;grid-column:1/-1;line-height:1.6}
-.db-pagination span{font-size:13px;color:var(--text-muted)}
-.db-pagination button{min-height:44px;padding:10px 16px;white-space:nowrap}
-.db-pagination button:disabled{opacity:.4;cursor:default}
-#cloud-service-status{line-height:1.65;overflow-wrap:anywhere}
-
-.cloud-service-config{display:grid;gap:10px;padding-bottom:16px;margin-bottom:16px;border-bottom:1px solid var(--border)}
-.cloud-service-config label{font-weight:700;line-height:1.5}
-.cloud-service-input-row{display:flex;align-items:stretch;gap:10px;min-width:0}
-.cloud-service-input-row input{flex:1;min-width:0}
-.cloud-service-input-row button{flex-shrink:0;min-height:44px;padding:10px 16px}
-.cloud-service-config p{margin:0;font-size:13px;color:var(--text-muted)}
-.cloud-service-input-row{display:grid;grid-template-columns:minmax(0,1fr) auto}
-.cloud-service-input-row input{width:100%}
-.cloud-service-input-row button{width:auto!important;min-width:72px}
-.btn-fb-signin[hidden],#gd-list-more[hidden]{display:none!important}

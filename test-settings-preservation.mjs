@@ -15,12 +15,12 @@ test('current Worker, Pages, cron and D1 settings are retained', async () => {
   assert.match(wrangler, /APP_URL = "https:\/\/lihe-source\.github\.io\/PWA-Vocabulary-GD\/"/);
   assert.match(wrangler, /ALLOWED_ORIGINS = "https:\/\/lihe-source\.github\.io"/);
   assert.match(wrangler, /database_id = "8886068d-480d-45ca-af8b-2c679d0fc150"/);
-  assert.match(worker, /SERVICE_VERSION = 'V7\.5\.0'/);
+  assert.match(worker, /SERVICE_VERSION = 'V7\.4\.2'/);
 });
 
 test('the release directory is completely flat', async () => {
   const entries = await readdir(new URL('.', import.meta.url), { withFileTypes: true });
-  assert.deepEqual(entries.filter(entry => entry.isDirectory() && !['node_modules','.wrangler','.git'].includes(entry.name)).map(entry => entry.name), []);
+  assert.deepEqual(entries.filter(entry => entry.isDirectory()).map(entry => entry.name), []);
 });
 
 test('V7.2 keeps the existing IndexedDB identity', async () => {

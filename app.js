@@ -1,31 +1,23 @@
-import { ZipClient } from './zip-client.js?v=V7_5_0';
-import { ModelCatalogManager } from './model-catalog.js?v=V7_5_0';
-import { createDataRepository } from './data-repository.js?v=V7_5_0';
-import { CloudAuthClient } from './cloud-auth-client.js?v=V7_5_0';
-import { COLLECTION_STORAGE_KEYS } from './data-operations.js?v=V7_5_0';
-import { RequestScope } from './request-scope.js?v=V7_5_0';
-import { AppStorage } from './storage.js?v=V7_5_0';
-import { BackupSchema } from './backup-schema.js?v=V7_5_0';
-import { VersionManager } from './version-manager.js?v=V7_5_0';
-import { PUSH_CONFIG } from './push-config.js?v=V7_5_0';
-import { ReminderManager, reminderErrorMessage } from './reminder-manager.js?v=V7_5_0';
-import { StudyStreakManager, STUDY_ACTIVITY_TYPES, STUDY_DAYS_CSV_HEADER, mergeStudyDays } from './study-streak.js?v=V7_5_0';
-import { Tasks } from './task-manager.js?v=V7_5_0';
-import { request as netRequest, readableError } from './network.js?v=V7_5_0';
-import { BackupWorker } from './backup-worker-client.js?v=V7_5_0';
-import { DraftManager } from './draft-manager.js?v=V7_5_0';
+import { AppStorage } from './storage.js?v=V7_4_2';
+import { BackupSchema } from './backup-schema.js?v=V7_4_2';
+import { VersionManager } from './version-manager.js?v=V7_4_2';
+import { TrendChart } from './chart-renderer.js?v=V7_4_2';
+import { PUSH_CONFIG } from './push-config.js?v=V7_4_2';
+import { ReminderManager, reminderErrorMessage } from './reminder-manager.js?v=V7_4_2';
+import { StudyStreakManager, STUDY_ACTIVITY_TYPES, STUDY_DAYS_CSV_HEADER, mergeStudyDays } from './study-streak.js?v=V7_4_2';
+import { Tasks } from './task-manager.js?v=V7_4_2';
+import { request as netRequest, readableError } from './network.js?v=V7_4_2';
+import { BackupWorker } from './backup-worker-client.js?v=V7_4_2';
+import { DraftManager } from './draft-manager.js?v=V7_4_2';
 
 // ===========================
-// 英文單字複習 PWA - app.js V7_5_0
-// V7.5.0：主畫面零阻塞、Google Drive 無打擾自動續登入與單一步驟授權
+// 英文單字複習 PWA - app.js V7_4_2
+// V7.4.2：主畫面零阻塞、Google Drive 無打擾自動續登入與單一步驟授權
 // ===========================
 
-const CloudAuth = new CloudAuthClient(AppStorage);
-const ModelCatalog = new ModelCatalogManager(AppStorage);
-const driveRequest=(url,options,policy)=>CloudAuth.configured ? CloudAuth.requestDrive(url,options,policy) : netRequest(url,options,policy);
-const APP_VERSION = 'V7_5_0';
-const APP_DISPLAY_VERSION = 'V7.5.0';
-const APP_CACHE_VERSION = 'Voc-PWA-V7_5_0';
+const APP_VERSION = 'V7_4_2';
+const APP_DISPLAY_VERSION = 'V7.4.2';
+const APP_CACHE_VERSION = 'Voc-PWA-V7_4_2';
 const Theme = {
   get() { return AppStorage.getItem('uiTheme') || 'dark'; },
   apply(mode = this.get()) {
@@ -45,9 +37,8 @@ const Theme = {
 Theme.init();
 const canActivateAppUpdate = () => {
   const storageStatus = AppStorage.getStatus();
-  if (Tasks.busy || storageStatus.pending || storageStatus.failed || Router.scope.busy) return false;
-  if (document.querySelector('#quiz-ghost-input, .essay-textarea, .reading-quiz-shell, .reading-loading, .ai-loading, #modal-overlay:not(.hidden)')) return false;
-  if(document.activeElement?.matches('input,textarea,select,[contenteditable="true"]'))return false;
+  if (Tasks.busy || storageStatus.pending || storageStatus.failed) return false;
+  if (document.querySelector('#quiz-ghost-input, .essay-textarea, .reading-quiz-shell, .reading-loading, .ai-loading')) return false;
   const aiAskInput = document.querySelector('.aiask-textarea');
   return !String(aiAskInput?.value || '').trim();
 };
@@ -450,12 +441,12 @@ const ECDICT = {
   },
   async importCSV(text, onProgress) {
     // Use record-aware parser to handle quoted fields with embedded newlines
-    const records = await BackupWorker.parseCsv(text);
+    const records = this._parseCSVRecords(text);
     // Skip header row (first record)
     const dataRecords = records.slice(1);
     const total = dataRecords.length;
     await this.clearAll(); const db = await this.openDB();
-    const BATCH = 500; let count = 0; let batch = [];
+    const BATCH = 2000; let count = 0; let batch = [];
     const writeBatch = (items) => new Promise((resolve, reject) => {
       const tx = db.transaction(this.STORE_NAME, 'readwrite');
       const store = tx.objectStore(this.STORE_NAME);
@@ -565,7 +556,468 @@ const ECDICT = {
 };
 
 // ===== DATA MANAGEMENT =====
-const DB = createDataRepository(AppStorage, {studyStreak:()=>StudyStreak,models:()=>Gemini.AVAILABLE_MODELS,recordStudyActivity});
+const DB = {
+  getWords() { try { return JSON.parse(AppStorage.getItem('vocabWords') || '[]'); } catch { return []; } },
+  saveWords(words) { AppStorage.setItem('vocabWords', JSON.stringify(words)); },
+  addWord(word) {
+    const words = this.getWords();
+    const newWord = { id: Date.now().toString(), english: word.english.trim().toLowerCase(), partOfSpeech: word.partOfSpeech || '', chinese: word.chinese.trim(), phonetic: word.phonetic || '', wrongCount: 0, createdAt: todayStr(), frequencyWeight: 1 };
+    words.push(newWord); this.saveWords(words); return newWord;
+  },
+  updateWord(id, data) {
+    const words = this.getWords(); const idx = words.findIndex(w => w.id === id);
+    if (idx !== -1) { words[idx] = { ...words[idx], ...data }; this.saveWords(words); return words[idx]; }
+  },
+  incrementWrongCounts(ids) {
+    const pending = new Set((ids || []).map(id => String(id)));
+    if (!pending.size) return 0;
+    const words = this.getWords();
+    let changed = 0;
+    words.forEach(word => {
+      if (!pending.has(String(word.id))) return;
+      word.wrongCount = (Number(word.wrongCount) || 0) + 1;
+      changed++;
+    });
+    if (changed) this.saveWords(words);
+    return changed;
+  },
+  deleteWords(ids) { this.saveWords(this.getWords().filter(w => !ids.includes(w.id))); },
+  getHistory() { try { return JSON.parse(AppStorage.getItem('practiceHistory') || '[]'); } catch { return []; } },
+  saveHistory(h) { AppStorage.setItem('practiceHistory', JSON.stringify(h)); },
+  // ── Reading Quiz History ──
+  getReadingQuizHistory() { try { return JSON.parse(AppStorage.getItem('readingQuizHistory') || '[]'); } catch { return []; } },
+  saveReadingQuizHistory(arr) { AppStorage.setItem('readingQuizHistory', JSON.stringify(arr)); },
+  addReadingQuizSession(entry) {
+    const history = this.getReadingQuizHistory();
+    const date = entry.date || todayStr();
+    const session = {
+      id: entry.id || String(Date.now()),
+      article: entry.article || '',
+      articleZh: entry.articleZh || '',
+      words: Array.isArray(entry.words) ? entry.words : [],
+      questions: Array.isArray(entry.questions) ? entry.questions : [],
+      answers: entry.answers || {},
+      score: Number(entry.score) || 0,
+      correct: Number(entry.correct) || 0,
+      total: Number(entry.total) || 5,
+      ts: entry.ts || Date.now()
+    };
+    const idx = history.findIndex(h => h.date === date);
+    if (idx >= 0) history[idx].sessions = [...(history[idx].sessions || []), session];
+    else history.unshift({ date, sessions: [session] });
+    if (history.length > 180) history.length = 180;
+    this.saveReadingQuizHistory(history);
+    recordStudyActivity(STUDY_ACTIVITY_TYPES.READING_QUIZ, `reading:${session.id}`);
+    return session;
+  },
+  exportReadingQuizCSV() {
+    const history = this.getReadingQuizHistory();
+    const header = ['日期','分數','正確題數','總題數','使用單字','文章','題目結果','時間戳'];
+    const rows = [];
+    history.forEach(h => {
+      (h.sessions || []).forEach(s => {
+        const words = (s.words || []).map(w => w.english || w.word || '').filter(Boolean).join(';');
+        const qa = JSON.stringify({ questions: s.questions || [], answers: s.answers || {}, articleZh: s.articleZh || '' });
+        rows.push([h.date, s.score || 0, s.correct || 0, s.total || 5, words, s.article || '', qa, s.ts || ''].map(v => `"${String(v).replace(/"/g,'""')}"`));
+      });
+    });
+    return [header.join(','), ...rows.map(r => r.join(','))].join('\n');
+  },
+  importReadingQuizCSV(text) {
+    const records = this._splitCSVRecords(text.replace(/^\uFEFF/, '').trim());
+    if (records.length < 2) return { added: 0 };
+    const headerLine = records[0].replace(/"/g, '').trim();
+    if (headerLine !== this.CSV_HEADERS.reading) throw new Error('FORMAT_MISMATCH_READING');
+    const history = this.getReadingQuizHistory();
+    let added = 0;
+    const seen = new Set();
+    history.forEach(h => (h.sessions || []).forEach(s => seen.add(String(s.ts || s.id || '') + '|' + (s.article || '').slice(0, 40))));
+    for (let i = 1; i < records.length; i++) {
+      const cols = this._parseCSVLine(records[i]);
+      if (cols.length < 6) continue;
+      const date = (cols[0] || '').trim();
+      const score = parseInt(cols[1]) || 0;
+      const correct = parseInt(cols[2]) || 0;
+      const total = parseInt(cols[3]) || 5;
+      const wordsStr = (cols[4] || '').trim();
+      const article = (cols[5] || '').trim();
+      const qaRaw = (cols[6] || '').trim();
+      const ts = parseInt(cols[7] || '0') || (Date.now() + i);
+      if (!date || !article) continue;
+      let qa = {}; try { qa = qaRaw ? JSON.parse(qaRaw) : {}; } catch { qa = {}; }
+      const words = wordsStr ? wordsStr.split(';').map(w => ({ english: w.trim(), chinese: '', partOfSpeech: '' })).filter(w => w.english) : [];
+      const key = String(ts) + '|' + article.slice(0, 40);
+      if (seen.has(key)) continue;
+      const session = { id: String(ts), article, articleZh: qa.articleZh || '', words, questions: qa.questions || [], answers: qa.answers || {}, score, correct, total, ts };
+      const idx = history.findIndex(h => h.date === date);
+      if (idx >= 0) history[idx].sessions = [...(history[idx].sessions || []), session];
+      else history.unshift({ date, sessions: [session] });
+      seen.add(key); added++;
+    }
+    this.saveReadingQuizHistory(history);
+    return { added };
+  },
+  // ── Essay Writing History ──
+  getEssayHistory() { try { return JSON.parse(AppStorage.getItem('essayHistory') || '[]'); } catch { return []; } },
+  saveEssayHistory(arr) { AppStorage.setItem('essayHistory', JSON.stringify(arr)); },
+  addEssaySession(entry) {
+    // entry: { date, words:[{english,chinese,partOfSpeech}], essay, feedback, score, annotatedHtml }
+    const history = this.getEssayHistory();
+    const idx = history.findIndex(h => h.date === entry.date);
+    const newSession = { essay: entry.essay, feedback: entry.feedback, score: entry.score, words: entry.words, annotatedHtml: entry.annotatedHtml||'', ts: Date.now() };
+    if (idx >= 0) {
+      // Append new session — never overwrite existing sessions
+      history[idx].sessions = [...(history[idx].sessions||[]), newSession];
+    } else {
+      history.unshift({ date: entry.date, sessions: [newSession] });
+    }
+    if (history.length > 180) history.length = 180;
+    this.saveEssayHistory(history);
+    recordStudyActivity(STUDY_ACTIVITY_TYPES.ESSAY_REVIEW, `essay:${newSession.ts}`);
+    return newSession;
+  },
+  exportEssayCSV() {
+    const history = this.getEssayHistory();
+    const header = ['日期','使用單字','文章','AI批改','分數','模式','題目'];
+    const rows = [];
+    history.forEach(h => {
+      (h.sessions||[]).forEach(s => {
+        rows.push([h.date, (s.words||[]).map(w=>w.english).join(';'), s.essay||'', s.feedback||'', s.score||'', s.essayMode||'vocab', s.topic||''].map(v=>`"${String(v).replace(/"/g,'""')}"`));
+      });
+    });
+    return [header.join(','), ...rows.map(r=>r.join(','))].join('\n');
+  },
+  importEssayCSV(text) {
+    const records = this._splitCSVRecords(text.replace(/^\uFEFF/, '').trim());
+    if (records.length < 2) return { added: 0 };
+    const headerLine = records[0].replace(/"/g, '').trim();
+    if (headerLine !== this.CSV_HEADERS.essay) throw new Error('FORMAT_MISMATCH_ESSAY');
+    const history = this.getEssayHistory();
+    let added = 0;
+    for (let i = 1; i < records.length; i++) {
+      const cols = this._parseCSVLine(records[i]);
+      if (cols.length < 4) continue;
+      const date = (cols[0]||'').trim();
+      const wordsStr = (cols[1]||'').trim();
+      const essay = (cols[2]||'').trim();
+      const feedback = (cols[3]||'').trim();
+      const score = (cols[4]||'').trim();
+      const essayMode = (cols[5]||'vocab').trim() || 'vocab';
+      const topic = (cols[6]||'').trim();
+      if (!date || !essay) continue;
+      const words = wordsStr ? wordsStr.split(';').map(w=>({ english: w.trim(), chinese:'', partOfSpeech:'' })) : [];
+      const session = { essay, feedback, score, words, essayMode, topic, ts: Date.now() + i };
+      const idx = history.findIndex(h => h.date === date);
+      if (idx >= 0) { history[idx].sessions = history[idx].sessions || []; history[idx].sessions.push(session); }
+      else { history.unshift({ date, sessions: [session] }); added++; }
+    }
+    this.saveEssayHistory(history);
+    return { added };
+  },
+  // ── AI Ask History ──
+  getAiAskHistory()         { try { return JSON.parse(AppStorage.getItem('aiAskHistory') || '[]'); } catch { return []; } },
+  saveAiAskHistory(arr)     { AppStorage.setItem('aiAskHistory', JSON.stringify(arr)); },
+  addAiAskEntry(entry) {
+    // entry: { id (YYMMDDHHMM), question, answer, ts }
+    const history = this.getAiAskHistory();
+    history.unshift(entry);
+    if (history.length > 300) history.length = 300;
+    this.saveAiAskHistory(history);
+    recordStudyActivity(STUDY_ACTIVITY_TYPES.AI_ASK, `aiask:${entry.id || 'entry'}:${entry.ts || Date.now()}`);
+  },
+  exportAiAskCSV() {
+    const history = this.getAiAskHistory();
+    const header  = ['ID','問題','回覆','時間戳'];
+    const rows    = history.map(e =>
+      [e.id||'', e.question||'', e.answer||'', e.ts||''].map(v => `"${String(v).replace(/"/g,'""')}"`)
+    );
+    return [header.join(','), ...rows.map(r => r.join(','))].join('\n');
+  },
+  importAiAskCSV(text) {
+    const records = this._splitCSVRecords(text.replace(/^\uFEFF/, '').trim());
+    if (records.length < 2) return { added: 0 };
+    const headerLine = records[0].replace(/"/g, '').trim();
+    if (headerLine !== this.CSV_HEADERS.aiask) throw new Error('FORMAT_MISMATCH_AIASK');
+    const history = this.getAiAskHistory();
+    let added = 0;
+    for (let i = 1; i < records.length; i++) {
+      const cols = this._parseCSVLine(records[i]);
+      if (cols.length < 2) continue;
+      const id = (cols[0]||'').trim(); const question = (cols[1]||'').trim();
+      const answer = (cols[2]||'').trim(); const ts = parseInt(cols[3]||'0') || Date.now();
+      if (!id || !question) continue;
+      if (!history.find(e => e.id === id)) { history.unshift({ id, question, answer, ts }); added++; }
+    }
+    this.saveAiAskHistory(history);
+    return { added };
+  },
+
+  addPracticeSession(date, totalWords, wrongWordDetails) {
+    const correct = totalWords - wrongWordDetails.length; const wrong = wrongWordDetails.length;
+    const history = this.getHistory(); const existing = history.find(h => h.date === date);
+    if (existing) {
+      existing.correct += correct; existing.wrong += wrong; existing.total += totalWords;
+      if (!existing.wrongWordDetails) existing.wrongWordDetails = [];
+      wrongWordDetails.forEach(wd => { if (!existing.wrongWordDetails.find(e => e.english === wd.english)) existing.wrongWordDetails.push(wd); });
+    } else { history.push({ date, correct, wrong, total: totalWords, wrongWordDetails }); }
+    this.saveHistory(history);
+    recordStudyActivity(STUDY_ACTIVITY_TYPES.WORD_QUIZ, `word:${date}:${Date.now()}`);
+  },
+  getApiKey() { return AppStorage.getItem('geminiApiKey') || ''; },
+  saveApiKey(key) { AppStorage.setItem('geminiApiKey', key); },
+  getModel() {
+    const saved = AppStorage.getItem('geminiModel') || '';
+    const validModels = (typeof Gemini !== 'undefined' && Gemini.AVAILABLE_MODELS)
+      ? Gemini.AVAILABLE_MODELS.map(m => m.id)
+      : [];
+    if (saved && (!validModels.length || validModels.includes(saved))) return saved;
+    const fallback = 'gemini-3.5-flash';
+    if (saved && validModels.length && !validModels.includes(saved)) AppStorage.setItem('geminiModel', fallback);
+    return fallback;
+  },
+  saveModel(m) { AppStorage.setItem('geminiModel', m); },
+  // ── Google Drive config ──
+  getGDriveClientId()  { return AppStorage.getItem('gdriveClientId') || ''; },
+  setGDriveClientId(v) { AppStorage.setItem('gdriveClientId', v); },
+  getGDriveFolderId()  { return AppStorage.getItem('gdriveFolderId') || ''; },
+  setGDriveFolderId(v) { AppStorage.setItem('gdriveFolderId', v); },
+  getGDriveAutoSync()  { return AppStorage.getItem('gdriveAutoSync') === '1'; },
+  setGDriveAutoSync(v) { AppStorage.setItem('gdriveAutoSync', v ? '1' : '0'); },
+  getGDriveLastSync()  { return AppStorage.getItem('gdriveLastSync') || ''; },
+  setGDriveLastSync(v) { AppStorage.setItem('gdriveLastSync', v); },
+  getBoostedWords() { try { return JSON.parse(AppStorage.getItem('boostedWords') || '[]'); } catch { return []; } },
+  saveBoostedWords(ids) { AppStorage.setItem('boostedWords', JSON.stringify(ids)); },
+  getTtsDelay()    { return parseInt(AppStorage.getItem('ttsDelay') || '300'); },
+  saveTtsDelay(ms) { AppStorage.setItem('ttsDelay', String(ms)); },
+  toggleBoost(id) {
+    const b = this.getBoostedWords(); const idx = b.indexOf(id);
+    if (idx === -1) b.push(id); else b.splice(idx, 1);
+    this.saveBoostedWords(b); return idx === -1;
+  },
+  isBoosted(id) { return this.getBoostedWords().includes(id); },
+  getTodaySentence() {
+    try { const s = JSON.parse(AppStorage.getItem('todaySentence') || 'null'); return (s && s.date === todayStr()) ? s : null; }
+    catch { return null; }
+  },
+  saveTodaySentence(data) { AppStorage.setItem('todaySentence', JSON.stringify({ ...data, date: todayStr() })); },
+  // AI-generated sentence log
+  getSentenceLog() { try { return JSON.parse(AppStorage.getItem('sentenceLog') || '[]'); } catch { return []; } },
+  saveSentenceToLog(entry) {
+    const log = this.getSentenceLog();
+    log.unshift({ ...entry, id: Date.now().toString() });
+    if (log.length > 120) log.length = 120;
+    AppStorage.setItem('sentenceLog', JSON.stringify(log));
+  },
+  // Imported sentence bank (CSV)
+  getImportedSentences() { try { return JSON.parse(AppStorage.getItem('importedSentences') || '[]'); } catch { return []; } },
+  saveImportedSentences(arr) { AppStorage.setItem('importedSentences', JSON.stringify(arr)); },
+  importSentencesCSV(text) {
+    const records = this._splitCSVRecords(text.replace(/^\uFEFF/, '').trim());
+    if (records.length < 2) return { added: 0, total: 0 };
+    // ── 格式驗證 ──
+    const headerLine = records[0].replace(/\r/,'').trim().replace(/^\uFEFF/,'').replace(/"/g,'');
+    if (headerLine !== this.CSV_HEADERS.sentences) throw new Error('FORMAT_MISMATCH_SENTENCES');
+    const existing = this.getImportedSentences();
+    const existingKeys = new Set(existing.map(s => s.date + '|' + s.wordEn));
+    let added = 0;
+    for (let i = 1; i < records.length; i++) {
+      const cols = this._parseCSVLine(records[i]);
+      if (cols.length < 6) continue;
+      const date = (cols[0] || '').trim();
+      const wordEn = (cols[1] || '').trim().toLowerCase();
+      const wordPos = (cols[2] || '').trim();
+      const wordZh = (cols[3] || '').trim();
+      const en = (cols[4] || '').trim();
+      const zh = (cols[5] || '').trim();
+      if (!date || !wordEn || !en || !zh) continue;
+      const key = date + '|' + wordEn;
+      if (!existingKeys.has(key)) {
+        existing.unshift({ date, wordEn, wordPos, wordZh, en, zh, id: Date.now().toString() + i, source: 'csv' });
+        existingKeys.add(key); added++;
+      }
+    }
+    this.saveImportedSentences(existing);
+    return { added, total: existing.length };
+  },
+  exportSentencesCSV() {
+    const wordMap = {};
+    this.getWords().forEach(w => { wordMap[w.english.toLowerCase()] = w.chinese; });
+    const ai = this.getSentenceLog().map(e => ({
+      date: e.date, wordEn: e.wordEn, wordPos: e.wordPos||'',
+      // wordZh: use stored value, fall back to DB lookup so older entries still highlight
+      wordZh: e.wordZh || wordMap[(e.wordEn||'').toLowerCase()] || '',
+      en: e.en, zh: e.zh, source: 'ai'
+    }));
+    const imported = this.getImportedSentences();
+    const all = [...imported, ...ai];
+    // Deduplicate by date+wordEn
+    const seen = new Set(); const unique = all.filter(e => { const k = e.date+'|'+e.wordEn; if (seen.has(k)) return false; seen.add(k); return true; });
+    const header = ['date','wordEn','wordPos','wordZh','en','zh'];
+    const rows = unique.map(e => [e.date, e.wordEn, e.wordPos||'', e.wordZh||'', e.en, e.zh].map(v => `"${String(v).replace(/"/g,'""')}"`));
+    return [header.join(','), ...rows.map(r => r.join(','))].join('\n');
+  },
+  // Combined sentence log for home display
+  getCombinedSentenceLog() {
+    const ai = this.getSentenceLog();
+    const imported = this.getImportedSentences();
+    // Merge, prefer AI for same date+word key
+    const seen = new Set();
+    const result = [];
+    [...ai, ...imported].forEach(e => {
+      const k = e.date + '|' + (e.wordEn || '');
+      if (!seen.has(k)) { seen.add(k); result.push(e); }
+    });
+    // Sort by date descending
+    result.sort((a, b) => {
+      const da = a.date || ''; const db2 = b.date || '';
+      return db2.localeCompare(da);
+    });
+    return result.slice(0, 150);
+  },
+  // Get sentence for today from any source
+  getTodaySentenceAny() {
+    const today = todayStr();
+    // 1. Check AI cached (priority)
+    const ai = this.getTodaySentence();
+    if (ai) return ai;
+    // 2. Filter all imported sentences matching today, pick one at random
+    const todayImported = this.getImportedSentences().filter(s => s.date === today);
+    if (todayImported.length > 0) {
+      return todayImported[Math.floor(Math.random() * todayImported.length)];
+    }
+    return null;
+  },
+  // ── CSV 標頭定義（格式鎖定）──
+  CSV_HEADERS: {
+    vocab:     '英文單字,詞性,中文,音標,答錯次數,建立日期,頻率加權',
+    essay:     '日期,使用單字,文章,AI批改,分數,模式,題目',
+    sentences: 'date,wordEn,wordPos,wordZh,en,zh',
+    stats:     '日期,總題數,正確,錯誤,正確率%',
+    reading:   '日期,分數,正確題數,總題數,使用單字,文章,題目結果,時間戳',
+    aiask:     'ID,問題,回覆,時間戳',
+    studyDays: STUDY_DAYS_CSV_HEADER
+  },
+  // 自動偵測 CSV 類型，回傳 'vocab' | 'sentences' | 'stats' | null
+  detectCSVType(text) {
+    const firstLine = text.trim().split('\n')[0].replace(/\r/,'').trim();
+    // 去除 BOM 和引號比對
+    const clean = firstLine.replace(/^\uFEFF/,'').replace(/"/g,'');
+    if (clean === this.CSV_HEADERS.vocab)     return 'vocab';
+    if (clean === this.CSV_HEADERS.sentences)  return 'sentences';
+    if (clean === this.CSV_HEADERS.stats)      return 'stats';
+    if (clean === this.CSV_HEADERS.reading)    return 'reading';
+    if (clean === this.CSV_HEADERS.essay)      return 'essay';
+    if (clean === this.CSV_HEADERS.aiask)      return 'aiask';
+    if (clean === this.CSV_HEADERS.studyDays)  return 'studyDays';
+    return null;
+  },
+  exportStudyDaysCSV() { return StudyStreak.exportCSV(); },
+  importStudyDaysCSV(text) { return StudyStreak.importCSV(text); },
+  exportCSV() {
+    const words = this.getWords();
+    const header = ['英文單字','詞性','中文','音標','答錯次數','建立日期','頻率加權'];
+    const rows = words.map(w => [w.english, w.partOfSpeech, w.chinese, w.phonetic||'', w.wrongCount||0, w.createdAt||'', w.frequencyWeight||1].map(v => `"${String(v).replace(/"/g,'""')}"`));
+    return [header.join(','), ...rows.map(r => r.join(','))].join('\n');
+  },
+  importCSV(text) {
+    const records = this._splitCSVRecords(text.replace(/^\uFEFF/, '').trim());
+    if (records.length < 2) return { added: 0, skipped: 0 };
+    // ── 格式驗證 ──
+    const headerLine = records[0].replace(/\r/,'').trim().replace(/^\uFEFF/,'').replace(/"/g,'');
+    if (headerLine !== this.CSV_HEADERS.vocab) throw new Error('FORMAT_MISMATCH_VOCAB');
+    const words = this.getWords(); let added = 0, skipped = 0;
+    for (let i = 1; i < records.length; i++) {
+      const cols = this._parseCSVLine(records[i]);
+      if (cols.length < 3) { skipped++; continue; }
+      const english = (cols[0] || '').trim().toLowerCase();
+      const partOfSpeech = (cols[1] || '').trim();
+      const chinese = (cols[2] || '').trim();
+      if (!english || !chinese) { skipped++; continue; }
+      const existing = words.find(w => w.english === english);
+      if (existing) {
+        existing.partOfSpeech = partOfSpeech; existing.chinese = chinese;
+        if (cols[3]) existing.phonetic = cols[3];
+        if (cols[4]) existing.wrongCount = parseInt(cols[4]) || 0;
+        if (cols[6]) existing.frequencyWeight = parseInt(cols[6]) || 1;
+      } else {
+        words.push({ id: (Date.now() + i).toString(), english, partOfSpeech, chinese, phonetic: (cols[3]||'').trim(), wrongCount: parseInt(cols[4])||0, createdAt: (cols[5]||'').trim()||todayStr(), frequencyWeight: parseInt(cols[6])||1 });
+        added++;
+      }
+    }
+    this.saveWords(words); return { added, skipped };
+  },
+  // Stats CSV export
+  exportStatsCSV() {
+    const history = this.getHistory();
+    const header = ['日期','總題數','正確','錯誤','正確率%'];
+    const rows = history.map(h => {
+      const pct = h.total > 0 ? Math.round((h.correct/h.total)*100) : 0;
+      return [h.date, h.total||0, h.correct||0, h.wrong||0, pct].map(v=>`"${v}"`);
+    });
+    return [header.join(','), ...rows.map(r=>r.join(','))].join('\n');
+  },
+  // Stats CSV import (merge into existing history)
+  importStatsCSV(text) {
+    const records = this._splitCSVRecords(text.replace(/^\uFEFF/, '').trim());
+    if (records.length < 2) return { added: 0, updated: 0 };
+    // ── 格式驗證 ──
+    const headerLine = records[0].replace(/\r/,'').trim().replace(/^\uFEFF/,'').replace(/"/g,'');
+    if (headerLine !== this.CSV_HEADERS.stats) throw new Error('FORMAT_MISMATCH_STATS');
+    const history = this.getHistory();
+    const dataMap = {};
+    history.forEach(h => { dataMap[h.date] = h; });
+    let added = 0, updated = 0;
+    for (let i = 1; i < records.length; i++) {
+      const cols = this._parseCSVLine(records[i]);
+      if (cols.length < 4) continue;
+      const date = (cols[0]||'').trim();
+      const total = parseInt(cols[1])||0;
+      const correct = parseInt(cols[2])||0;
+      const wrong = parseInt(cols[3])||0;
+      if (!date || (!total && !correct && !wrong)) continue;
+      if (dataMap[date]) {
+        if (total > (dataMap[date].total||0)) {
+          dataMap[date].total = total; dataMap[date].correct = correct; dataMap[date].wrong = wrong; updated++;
+        }
+      } else {
+        dataMap[date] = { date, total, correct, wrong, wrongWordDetails: [] }; added++;
+      }
+    }
+    const merged = Object.values(dataMap).sort((a,b)=>a.date.localeCompare(b.date));
+    this.saveHistory(merged);
+    return { added, updated };
+  },
+  // Split CSV text into records, respecting quoted multiline fields
+  _splitCSVRecords(text) {
+    const records = [];
+    let current = '';
+    let inQuote = false;
+    const src = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+    for (let i = 0; i < src.length; i++) {
+      const ch = src[i];
+      if (ch === '"') {
+        if (inQuote && src[i + 1] === '"') { current += '"'; i++; }
+        else { inQuote = !inQuote; current += ch; }
+      } else if (ch === '\n' && !inQuote) {
+        records.push(current); current = '';
+      } else {
+        current += ch;
+      }
+    }
+    if (current.trim()) records.push(current);
+    return records;
+  },
+  _parseCSVLine(line) {
+    const result = []; let current = ''; let inQuote = false;
+    for (let i = 0; i < line.length; i++) {
+      const ch = line[i];
+      if (ch === '"') { if (inQuote && line[i+1] === '"') { current += '"'; i++; } else inQuote = !inQuote; }
+      else if (ch === ',' && !inQuote) { result.push(current); current = ''; }
+      else { current += ch; }
+    }
+    result.push(current); return result;
+  }
+};
 
 function getOrCreateVocabularyDeviceId() {
   let id = AppStorage.getItem('vocabDeviceId') || '';
@@ -628,26 +1080,545 @@ function recordStudyActivity(type, eventId = '') {
 
 // ===== GEMINI API =====
 const Gemini = {
-  get AVAILABLE_MODELS(){return ModelCatalog.models;},
-  _getModelList(){return [...new Set([DB.getModel(),...ModelCatalog.models.filter(model=>model.tier!=='preview').map(model=>model.id)])].slice(0,2);}
-};
-let geminiModule;
-for(const method of ['generateSentence','generateReadingQuiz','translateReadingArticle','lookupWord','reviewEssay','reviewEssayFree','answerQuestion']){
-  Gemini[method]=async(...args)=>{
-    const scope=Router.scope,job=scope.begin('ai:'+method,60000);
-    const policy={signal:job.signal,deadline:Date.now()+60000};
-    try{
-      geminiModule ||= import('./gemini-service.js?v=V7_5_0');
-      const module=await geminiModule;
-      await ModelCatalog.ensure(DB.getApiKey(),{signal:job.signal}).catch(()=>{});
-      if(job.signal.aborted)throw new Error('REQUEST_CANCELLED');
-      const value=await module.createGeminiService(DB,policy,ModelCatalog.models)[method](...args);
-      if(job.signal.aborted||scope!==Router.scope)throw new Error('REQUEST_CANCELLED');
-      return value;
-    }finally{job.finish();resumeAppUpdateWhenSafe();}
-  };
+  // All selectable models (display name -> API id)
+  AVAILABLE_MODELS: [
+    { label: 'Gemini 3.5 Flash',      id: 'gemini-3.5-flash',      tag: '推薦・穩定', tier: 'stable' },
+    { label: 'Gemini 3.1 Flash-Lite', id: 'gemini-3.1-flash-lite', tag: '快速・穩定', tier: 'stable' },
+    { label: 'Gemini 2.5 Flash',      id: 'gemini-2.5-flash',      tag: '備援・穩定', tier: 'stable' },
+    { label: 'Gemini 2.5 Flash-Lite', id: 'gemini-2.5-flash-lite', tag: '省配額・穩定', tier: 'stable' },
+    { label: 'Gemini 2.5 Pro',        id: 'gemini-2.5-pro',        tag: '高階・穩定', tier: 'stable' },
+    { label: 'Gemini 3.1 Pro Preview', id: 'gemini-3.1-pro-preview', tag: '預覽', tier: 'preview' },
+    { label: 'Gemini 3 Flash Preview', id: 'gemini-3-flash-preview', tag: '預覽', tier: 'preview' },
+  ],
+
+  // Production fallback stays on stable endpoints. Preview models are tried only when explicitly selected.
+  _getModelList() {
+    const selected = DB.getModel();
+    const selectedMeta = this.AVAILABLE_MODELS.find(m => m.id === selected);
+    const stableIds = this.AVAILABLE_MODELS.filter(m => m.tier === 'stable').map(m => m.id);
+    const previewIds = selectedMeta?.tier === 'preview'
+      ? this.AVAILABLE_MODELS.filter(m => m.tier === 'preview').map(m => m.id)
+      : [];
+    return [...new Set([selected, ...stableIds, ...previewIds])].filter(Boolean);
+  },
+
+  // Extract the actual response text, skipping "thought" parts from thinking models
+  _extractText(data) {
+    const parts = data.candidates?.[0]?.content?.parts || [];
+    if (!parts.length) return '';
+    // Thinking / preview models may split the final answer across multiple non-thought text parts.
+    // Join every visible text part so long translations are not cut off after the first segment.
+    const visibleText = parts
+      .filter(p => !p.thought && typeof p.text === 'string')
+      .map(p => p.text)
+      .join('');
+    if (visibleText.trim()) return visibleText;
+    return parts
+      .filter(p => typeof p.text === 'string')
+      .map(p => p.text)
+      .join('');
+  },
+
+  // Robust parser: handles EN:/ZH: labels, bold markers, thinking model artifacts
+  _parse(raw) {
+    if (!raw) return null;
+    // Strip markdown bold/italic markers and <thinking> blocks
+    let text = raw
+      .replace(/<thinking>[\s\S]*?<\/thinking>/gi, '')
+      .replace(/\*+/g, '')
+      .trim();
+    // Try EN: / ZH: labels (case-insensitive, handles extra spaces)
+    const enMatch = text.match(/EN:\s*([^\n]+)/i);
+    const zhMatch = text.match(/ZH:\s*([^\n]+)/i);
+    if (enMatch && zhMatch) {
+      const en = enMatch[1].trim().replace(/^["']|["']$/g, '');
+      const zh = zhMatch[1].trim().replace(/^["']|["']$/g, '');
+      if (en && zh) return { en, zh };
+    }
+    // Fallback: take first two non-empty lines as EN then ZH
+    const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
+    if (lines.length >= 2) {
+      const en = lines[0].replace(/^(English|EN|Sentence|句子):\s*/i, '').replace(/^["']|["']$/g, '').trim();
+      const zh = lines[1].replace(/^(Chinese|ZH|Translation|中文|翻譯):\s*/i, '').replace(/^["']|["']$/g, '').trim();
+      if (en && zh && en.length > 3 && zh.length > 1) return { en, zh };
+    }
+    return null;
+  },
+
+  async _callModel(model, body, apiKey, attempt = 0) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 30000);
+    let res;
+    try {
+      res = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
+        { method: 'POST', headers: { 'Content-Type': 'application/json' }, body, signal: controller.signal }
+      );
+    } catch (error) {
+      if (error?.name === 'AbortError') throw new Error('API_TIMEOUT');
+      throw new Error('NETWORK_ERROR');
+    } finally {
+      clearTimeout(timeoutId);
+    }
+    if (!res.ok) {
+      let errMsg = `HTTP ${res.status}`;
+      try { const d = await res.json(); errMsg = d.error?.message || errMsg; } catch {}
+      const lower = String(errMsg).toLowerCase();
+      const err = new Error(errMsg);
+      const apiKeyProblem = lower.includes('api key') || lower.includes('apikey') || lower.includes('permission denied') || lower.includes('authentication');
+      const modelProblem = lower.includes('model') || lower.includes('not found') || lower.includes('not supported') || lower.includes('deprecated') || lower.includes('quota') || lower.includes('rate limit') || lower.includes('unavailable');
+      if (!apiKeyProblem && attempt < 1 && (res.status === 429 || res.status === 503)) {
+        await new Promise(resolve => setTimeout(resolve, 900));
+        return this._callModel(model, body, apiKey, attempt + 1);
+      }
+      err.fallback = !apiKeyProblem && (res.status === 404 || res.status === 429 || res.status === 503 || (res.status === 400 && modelProblem));
+      throw err;
+    }
+    const data = await res.json();
+    return this._extractText(data);
+  },
+
+  async reviewEssay(essay, words) {
+    const apiKey = DB.getApiKey();
+    if (!apiKey) throw new Error('NO_API_KEY');
+    const wordList = words.map(w => `"${w.english}" (${w.partOfSpeech}: ${w.chinese})`).join(', ');
+    const prompt = `You are an English writing teacher. Review the student essay below.
+
+Required vocabulary words: ${wordList}
+
+Student essay:
+${essay}
+
+Respond ONLY with a single valid JSON object. No markdown fences, no explanation, no text before or after the JSON.
+Required format:
+{"wordCheck":[{"word":"string","used":true,"correct":true,"note":"string"}],"grammar":[{"exact":"string","corrected":"string","explanation":"string"}],"suggestions":["string"],"score":7,"comment":"string"}
+
+Rules:
+- wordCheck: one entry per required vocabulary word (used=false if not found in essay)
+- grammar: list up to 5 grammar or spelling errors (empty array [] if none).
+  CRITICAL CONSTRAINT: When correcting errors, you MUST keep the required vocabulary words unchanged in "corrected". Do NOT replace or substitute any required vocabulary word with a different word — only fix surrounding grammar, spelling, or sentence structure.
+  "exact" must be the EXACT substring copied verbatim from the student essay so it can be found by string search. "corrected" is the fixed replacement. "explanation" is in Traditional Chinese (繁體中文).
+- suggestions: 2-3 tips to improve the essay in Traditional Chinese (繁體中文). Do NOT suggest replacing the required vocabulary words.
+- comment: one sentence overall evaluation in Traditional Chinese (繁體中文)
+- score: integer 1-10`;
+
+    const body = JSON.stringify({
+      contents: [{ parts: [{ text: prompt }] }],
+      generationConfig: { temperature: 0.2, maxOutputTokens: 2500 }
+    });
+
+    // Helper: extract first valid JSON object from raw text
+    const extractJSON = (raw) => {
+      // Remove thinking tags (Gemini 2.5 Flash thinking model)
+      let text = raw.replace(/<thinking>[\s\S]*?<\/thinking>/gi, '').trim();
+      // Remove markdown fences (```json ... ``` or ``` ... ```)
+      text = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/, '').trim();
+      // Find the first { ... } block (handles leading/trailing whitespace or text)
+      const start = text.indexOf('{');
+      const end = text.lastIndexOf('}');
+      if (start === -1 || end === -1 || end <= start) return null;
+      return text.slice(start, end + 1);
+    };
+
+    let lastErr = null;
+    for (const model of this._getModelList()) {
+      try {
+        const raw = await this._callModel(model, body, apiKey);
+        if (!raw) { lastErr = new Error('EMPTY_RESPONSE'); continue; }
+        const jsonStr = extractJSON(raw);
+        if (!jsonStr) { lastErr = new Error(`PARSE_ERROR: no JSON found in response`); continue; }
+        const parsed = JSON.parse(jsonStr);
+        if (parsed && typeof parsed.score !== 'undefined') return parsed;
+        lastErr = new Error('PARSE_ERROR: missing score field');
+      } catch(err) {
+        if (err.message === 'NETWORK_ERROR') throw err;
+        if (err.fallback) { lastErr = err; continue; }
+        if (err instanceof SyntaxError) { lastErr = new Error(`PARSE_ERROR: ${err.message}`); continue; }
+        throw err;
+      }
+    }
+    throw lastErr || new Error('API_ERROR');
+  },
+  // Review essay with a free topic (no required vocabulary words)
+  async reviewEssayFree(essay, topic) {
+    const apiKey = DB.getApiKey();
+    if (!apiKey) throw new Error('NO_API_KEY');
+    const prompt = `You are an English writing teacher. The student was given this topic/prompt: "${topic}"
+
+Student essay:
+${essay}
+
+Respond ONLY with a single valid JSON object. No markdown fences, no explanation.
+Required format:
+{"grammar":[{"exact":"string","corrected":"string","explanation":"string"}],"suggestions":["string"],"score":7,"comment":"string"}
+
+Rules:
+- grammar: up to 5 errors. "exact" must be verbatim from essay. "explanation" in 繁體中文.
+- suggestions: 2-3 tips in 繁體中文.
+- comment: one sentence evaluation in 繁體中文.
+- score: integer 1-10`;
+
+    const body = JSON.stringify({ contents:[{parts:[{text:prompt}]}], generationConfig:{temperature:0.2,maxOutputTokens:2500} });
+
+    const extractJSON = (raw) => {
+      let text = raw.replace(/<thinking>[\s\S]*?<\/thinking>/gi,'').trim()
+        .replace(/^\`\`\`(?:json)?\s*/i,'').replace(/\s*\`\`\`\s*$/,'').trim();
+      const start = text.indexOf('{'); const end = text.lastIndexOf('}');
+      if (start === -1 || end === -1 || end <= start) return null;
+      return text.slice(start, end + 1);
+    };
+
+    let lastErr = null;
+    for (const model of this._getModelList()) {
+      try {
+        const raw = await this._callModel(model, body, apiKey);
+        if (!raw) { lastErr = new Error('EMPTY_RESPONSE'); continue; }
+        const jsonStr = extractJSON(raw);
+        if (!jsonStr) { lastErr = new Error('PARSE_ERROR: no JSON'); continue; }
+        const parsed = JSON.parse(jsonStr);
+        // Normalize: add empty wordCheck for compatibility
+        if (parsed && typeof parsed.score !== 'undefined') {
+          parsed.wordCheck = parsed.wordCheck || [];
+          return parsed;
+        }
+        lastErr = new Error('PARSE_ERROR: missing score');
+      } catch(err) {
+        if (err.message === 'NETWORK_ERROR') throw err;
+        if (err.fallback) { lastErr = err; continue; }
+        if (err instanceof SyntaxError) { lastErr = new Error('PARSE_ERROR: ' + err.message); continue; }
+        throw err;
+      }
+    }
+    throw lastErr || new Error('API_ERROR');
+  },
+
+  async generateSentence(word) {
+    const apiKey = DB.getApiKey();
+    if (!apiKey) throw new Error('NO_API_KEY');
+
+    const prompt = `You are a language learning assistant. Create one natural English sentence using the word "${word.english}" (${word.partOfSpeech}: ${word.chinese}), then provide its Traditional Chinese translation.
+
+Output ONLY these two lines, nothing else:
+EN: [your English sentence]
+ZH: [繁體中文 translation]`;
+
+    const body = JSON.stringify({
+      contents: [{ parts: [{ text: prompt }] }],
+      generationConfig: { temperature: 0.7, maxOutputTokens: 200 }
+    });
+
+    let lastErr = null;
+    for (const model of this._getModelList()) {
+      try {
+        const raw = await this._callModel(model, body, apiKey);
+        const parsed = this._parse(raw);
+        if (parsed && parsed.en && parsed.zh) return parsed;
+        lastErr = new Error('PARSE_ERROR');
+        // Parse failed — try next model
+      } catch (err) {
+        if (err.message === 'NETWORK_ERROR') throw err;
+        if (err.fallback) { lastErr = err; continue; }
+        throw err;
+      }
+    }
+    throw lastErr || new Error('API_ERROR');
+  },
+
+
+  async translateReadingArticle(article, words) {
+    const apiKey = DB.getApiKey();
+    if (!apiKey) throw new Error('NO_API_KEY');
+    const cleanArticle = String(article || '').trim();
+    if (!cleanArticle) throw new Error('NO_ARTICLE');
+    const wordList = (Array.isArray(words) ? words : []).slice(0, 5).map((w, i) => {
+      const en = String(w.english || w.word || '').trim();
+      const zh = String(w.chinese || '').trim();
+      return `${i + 1}. ${en}: ${zh || '請依文章脈絡翻譯'}`;
+    }).filter(Boolean).join('\n');
+    const prompt = `Translate the full English reading passage into natural Traditional Chinese for Taiwan learners.
+
+English passage:
+${cleanArticle}
+
+Target vocabulary and preferred Chinese meanings:
+${wordList}
+
+Requirements:
+- Translate EVERY sentence from beginning to end. Do not summarize, shorten, skip, or stop early.
+- Keep the original sentence order and meaning.
+- Use the preferred Chinese meanings for the target vocabulary when they fit the passage.
+- Output ONLY the complete Traditional Chinese translation.
+- Do not add explanations, markdown, title, bullet points, or extra notes.`;
+
+    const body = JSON.stringify({
+      contents: [{ parts: [{ text: prompt }] }],
+      generationConfig: { temperature: 0.15, maxOutputTokens: 2400 }
+    });
+
+    let lastErr = null;
+    for (const model of this._getModelList()) {
+      try {
+        const raw = await this._callModel(model, body, apiKey);
+        const zh = String(raw || '')
+          .replace(/^\s*```(?:text|markdown)?\s*/i, '')
+          .replace(/\s*```\s*$/i, '')
+          .replace(/^\s*(?:ZH|Chinese|Translation|中文翻譯|翻譯)\s*[:：]\s*/i, '')
+          .trim();
+        if (zh) return zh;
+        lastErr = new Error('PARSE_ERROR');
+      } catch (err) {
+        if (err.message === 'NETWORK_ERROR') throw err;
+        if (err.fallback) { lastErr = err; continue; }
+        throw err;
+      }
+    }
+    throw lastErr || new Error('API_ERROR');
+  },
+
+
+  async generateReadingQuiz(words) {
+    const apiKey = DB.getApiKey();
+    if (!apiKey) throw new Error('NO_API_KEY');
+    const cleanWords = (Array.isArray(words) ? words : []).slice(0, 5).map((w, i) => ({
+      index: i + 1,
+      english: String(w.english || '').trim().toLowerCase(),
+      partOfSpeech: String(w.partOfSpeech || '').trim(),
+      chinese: String(w.chinese || '').trim()
+    })).filter(w => w.english);
+    if (cleanWords.length < 5) throw new Error('NOT_ENOUGH_WORDS');
+
+    const wordList = cleanWords.map(w => `${w.index}. "${w.english}" (${w.partOfSpeech || 'word'}: ${w.chinese || 'no Chinese definition'})`).join('\n');
+    const prompt = `You are an English reading-test generator for Traditional Chinese learners.
+
+Selected vocabulary words:
+${wordList}
+
+Create a short, natural English reading passage and a synonym multiple-choice quiz.
+
+Respond ONLY with a single valid JSON object. No markdown fences, no explanation, no text before or after JSON.
+Required JSON format:
+{
+  "article": "English passage under 200 words. Use every selected vocabulary word exactly as written at least once.",
+  "questions": [
+    {"word":"selected vocabulary word", "correctSynonym":"one correct English synonym", "options":["option A", "option B", "option C"]}
+  ]
 }
 
+Rules:
+- article must be under 200 English words.
+- questions must contain exactly 5 items, one item for each selected vocabulary word.
+- options must contain exactly 3 English options.
+- exactly one option must be the correct synonym, and it must equal correctSynonym.
+- the other two options must be plausible English distractors but NOT synonyms.
+- Do not translate the article.
+- Keep the article suitable for CEFR A2-B1 learners.`;
+
+    const body = JSON.stringify({
+      contents: [{ parts: [{ text: prompt }] }],
+      generationConfig: { temperature: 0.55, maxOutputTokens: 1800 }
+    });
+
+    const extractJSON = (raw) => {
+      let text = String(raw || '')
+        .replace(/<thinking>[\s\S]*?<\/thinking>/gi, '')
+        .replace(/^\s*```(?:json)?\s*/i, '')
+        .replace(/\s*```\s*$/i, '')
+        .trim();
+      const start = text.indexOf('{');
+      const end = text.lastIndexOf('}');
+      if (start === -1 || end === -1 || end <= start) return null;
+      return text.slice(start, end + 1);
+    };
+    const normalizeQuestion = (q, wordObj, idx) => {
+      const correct = String(q?.correctSynonym || '').trim();
+      let options = Array.isArray(q?.options) ? q.options.map(o => String(o || '').trim()).filter(Boolean) : [];
+      if (correct && !options.some(o => o.toLowerCase() === correct.toLowerCase())) options.unshift(correct);
+      options = [...new Set(options)].slice(0, 3);
+      while (options.length < 3) options.push(['meaning', 'opposite', 'example'][options.length] + ' ' + (idx + 1));
+      return {
+        word: wordObj.english,
+        wordId: wordObj.id || '',
+        chinese: wordObj.chinese || '',
+        partOfSpeech: wordObj.partOfSpeech || '',
+        correctSynonym: correct || options[0],
+        options: options.sort(() => Math.random() - 0.5).slice(0, 3)
+      };
+    };
+
+    let lastErr = null;
+    for (const model of this._getModelList()) {
+      try {
+        const raw = await this._callModel(model, body, apiKey);
+        const jsonStr = extractJSON(raw);
+        if (!jsonStr) { lastErr = new Error('PARSE_ERROR: no JSON'); continue; }
+        const parsed = JSON.parse(jsonStr);
+        const article = String(parsed.article || '').trim();
+        const articleWordCount = (article.match(/\b[\w'-]+\b/g) || []).length;
+        const missingWords = cleanWords.filter(w => !(new RegExp(`\\b${escapeRegex(w.english)}\\b`, 'i')).test(article));
+        const rawQuestions = Array.isArray(parsed.questions) ? parsed.questions : [];
+        if (!article || articleWordCount > 200 || missingWords.length || rawQuestions.length < 5) {
+          lastErr = new Error('PARSE_ERROR: article or quiz does not meet requirements');
+          continue;
+        }
+        const questions = cleanWords.map((cw, i) => {
+          const originalWord = words.find(w => String(w.english || '').trim().toLowerCase() === cw.english) || cw;
+          const match = rawQuestions.find(q => String(q?.word || '').trim().toLowerCase() === cw.english) || rawQuestions[i] || {};
+          return normalizeQuestion(match, originalWord, i);
+        });
+        if (questions.every(q => q.correctSynonym && q.options.length === 3)) return { article, questions };
+        lastErr = new Error('PARSE_ERROR: invalid questions');
+      } catch(err) {
+        if (err.message === 'NETWORK_ERROR') throw err;
+        if (err.fallback) { lastErr = err; continue; }
+        if (err instanceof SyntaxError) { lastErr = new Error('PARSE_ERROR: ' + err.message); continue; }
+        throw err;
+      }
+    }
+    throw lastErr || new Error('API_ERROR');
+  },
+
+  _isLocationError(err) {
+    return /user location is not supported|location.*not supported|region.*not supported|failed_precondition/i.test(String(err?.message || err || ''));
+  },
+
+  _isAuthError(err) {
+    return /api key|apikey|invalid|permission denied|authentication|unauthenticated/i.test(String(err?.message || err || ''));
+  },
+
+  _normalizePos(pos) {
+    const map = {
+      noun: 'n.', verb: 'v.', adjective: 'adj.', adverb: 'adv.', preposition: 'prep.', conjunction: 'conj.',
+      pronoun: 'pron.', auxiliary: 'aux.', numeral: 'num.', interjection: 'interj.'
+    };
+    const key = String(pos || '').toLowerCase().trim();
+    return map[key] || key.replace(/\.$/, '') + (key ? '.' : '');
+  },
+
+  async _translateWithPublicService(text) {
+    const q = String(text || '').trim();
+    if (!q) return '';
+    const endpoints = [
+      `https://api.mymemory.translated.net/get?q=${encodeURIComponent(q)}&langpair=en|zh-TW`,
+      `https://api.mymemory.translated.net/get?q=${encodeURIComponent(q)}&langpair=en|zh-CN`
+    ];
+    for (const url of endpoints) {
+      try {
+        const res = await fetch(url, { method: 'GET' });
+        if (!res.ok) continue;
+        const data = await res.json();
+        const translated = data?.responseData?.translatedText || data?.matches?.find(m => m?.translation)?.translation || '';
+        const cleaned = String(translated).replace(/&quot;/g, '"').replace(/&#39;/g, "'").trim();
+        if (cleaned && cleaned.toLowerCase() !== q.toLowerCase()) return cleaned;
+      } catch {}
+    }
+    return '';
+  },
+
+  async _lookupWordPublicFallback(word) {
+    const cleanWord = String(word || '').trim().toLowerCase();
+    if (!cleanWord) return [];
+    let dict = null;
+    try {
+      const res = await fetch(`https://api.dictionaryapi.dev/api/v2/entries/en/${encodeURIComponent(cleanWord)}`);
+      if (res.ok) dict = await res.json();
+    } catch {}
+
+    const entries = [];
+    const first = Array.isArray(dict) ? dict[0] : null;
+    const phonetic = (first?.phonetic || first?.phonetics?.find(p => p?.text)?.text || '').replace(/^\/+|\/+$/g, '').trim();
+    const meanings = Array.isArray(first?.meanings) ? first.meanings : [];
+    for (const meaning of meanings.slice(0, 6)) {
+      const def = meaning?.definitions?.find(d => d?.definition)?.definition || '';
+      const example = meaning?.definitions?.find(d => d?.example)?.example || '';
+      const zh = await this._translateWithPublicService(def || cleanWord);
+      entries.push({
+        english: cleanWord,
+        phonetic,
+        pos: this._normalizePos(meaning?.partOfSpeech),
+        chinese: (zh || await this._translateWithPublicService(cleanWord) || '公開字典查詢結果').replace(/；\s*$/,'').slice(0, 60),
+        example: String(example || '').slice(0, 120),
+        source: 'public-fallback'
+      });
+    }
+
+    if (!entries.length) {
+      const zh = await this._translateWithPublicService(cleanWord);
+      if (zh) entries.push({ english: cleanWord, phonetic: '', pos: '', chinese: zh.slice(0, 60), example: '', source: 'public-fallback' });
+    }
+    return entries.filter(e => e.english && e.chinese);
+  },
+
+  // Look up a single word via AI and return all POS senses as structured JSON
+  async lookupWord(word) {
+    const apiKey = DB.getApiKey();
+    if (!apiKey) throw new Error('NO_API_KEY');
+    const prompt = `You are an English dictionary. Look up the word "${word}" and return ALL its parts of speech (noun, verb, adjective, etc.) as a JSON array.
+
+Each element must have these fields:
+- "english": the word in lowercase
+- "phonetic": IPA pronunciation WITHOUT any slashes, e.g. ˈpæʃən (NOT /ˈpæʃən/)
+- "pos": part of speech abbreviation in Traditional Chinese style, use one of: n. v. adj. adv. prep. conj. pron. aux. num. interj.
+- "chinese": concise Traditional Chinese definition (1-3 meanings separated by semicolons, max 30 chars)
+- "example": one short example sentence in English (max 12 words)
+
+Return ONLY the JSON array. No markdown, no explanation. Example:
+[{"english":"run","phonetic":"rʌn","pos":"v.","chinese":"跑；運行；管理","example":"She runs every morning."},{"english":"run","phonetic":"rʌn","pos":"n.","chinese":"跑步；一段路程","example":"Let's go for a run."}]
+
+If the word does not exist or is invalid, return: []`;
+
+    const body = JSON.stringify({
+      contents: [{ parts: [{ text: prompt }] }],
+      generationConfig: {
+        temperature: 0.1,
+        maxOutputTokens: 1200,
+        responseMimeType: 'application/json'
+      }
+    });
+
+    let lastErr = null;
+    for (const model of this._getModelList()) {
+      try {
+        const raw = await this._callModel(model, body, apiKey);
+        if (!raw) { lastErr = new Error('EMPTY_RESPONSE'); continue; }
+        // Strip markdown fences/thinking tags and extract the first JSON array.
+        let text = String(raw)
+          .replace(/<thinking>[\s\S]*?<\/thinking>/gi, '')
+          .replace(/^\s*```(?:json)?\s*/i, '')
+          .replace(/\s*```\s*$/i, '')
+          .trim();
+        const start = text.indexOf('['), end = text.lastIndexOf(']');
+        if (start === -1 || end === -1 || end <= start) { lastErr = new Error('PARSE_ERROR'); continue; }
+        const arr = JSON.parse(text.slice(start, end + 1));
+        if (Array.isArray(arr)) {
+          return arr.map(item => ({
+            english:  String(item.english || word || '').trim().toLowerCase(),
+            phonetic: String(item.phonetic || '').replace(/^\/+|\/+$/g, '').trim(),
+            pos:      String(item.pos || '').trim(),
+            chinese:  String(item.chinese || '').trim(),
+            example:  String(item.example || '').trim()
+          })).filter(item => item.english && item.chinese);
+        }
+        lastErr = new Error('NOT_ARRAY');
+      } catch(err) {
+        if (err.message === 'NETWORK_ERROR') throw err;
+        if (err.fallback) { lastErr = err; continue; }
+        lastErr = err;
+      }
+    }
+    // Database lookup should remain useful even when Gemini is blocked by network/region, model availability, quota, or parsing issues.
+    // Do not hide true API-key/auth problems, because those require settings changes.
+    if (!this._isAuthError(lastErr)) {
+      const fallbackEntries = await this._lookupWordPublicFallback(word);
+      if (fallbackEntries.length) return fallbackEntries;
+      if (this._isLocationError(lastErr)) {
+        const e = new Error('REGION_UNSUPPORTED_NO_FALLBACK');
+        e.originalMessage = String(lastErr?.message || '');
+        throw e;
+      }
+    }
+    throw lastErr || new Error('API_ERROR');
+  }
+};
 
 // Yield between expensive backup/restore phases so Safari/iOS can repaint
 // button progress and keep touch/scroll input responsive.
@@ -679,12 +1650,11 @@ const GDrive = {
   SCOPE: 'https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/userinfo.email',
   EXPIRY_MARGIN_MS: 5 * 60 * 1000,
 
-  isSignedIn() { return CloudAuth.configured ? CloudAuth.connected : !!this._token && !this._isTokenExpired(); },
+  isSignedIn() { return !!this._token && !this._isTokenExpired(); },
   hasRememberedSession() { return !!this.getUserEmail(); },
-  getUserEmail() { return CloudAuth.email || this._email || AppStorage.getItem(this.SESSION_KEYS.email) || ''; },
+  getUserEmail() { return this._email || AppStorage.getItem(this.SESSION_KEYS.email) || ''; },
   getSessionStatus() {
     if (this.isSignedIn()) return 'active';
-    if (CloudAuth.configured && CloudAuth.state==='restoring') return 'restoring';
     return this.hasRememberedSession() ? 'remembered' : 'none';
   },
 
@@ -729,6 +1699,16 @@ const GDrive = {
     return this._gisPromise;
   },
 
+  preloadGIS() {
+    if (!DB.getGDriveClientId() || !navigator.onLine) return Promise.resolve(false);
+    return this._loadGIS()
+      .then(() => true)
+      .catch(error => {
+        console.info('[GDrive] GIS preload skipped:', error.message);
+        return false;
+      });
+  },
+
   _sessionClientId() { return AppStorage.getItem(this.SESSION_KEYS.clientId) || ''; },
   _sessionScope() { return AppStorage.getItem(this.SESSION_KEYS.scope) || ''; },
   _expiry() { return parseInt(sessionStorage.getItem(this.SESSION_KEYS.expiry) || '0', 10) || 0; },
@@ -751,7 +1731,6 @@ const GDrive = {
   },
 
   refreshUserEmail(token = this._token) {
-    if (CloudAuth.configured) return Promise.resolve(CloudAuth.email);
     if (!token) return Promise.resolve(this.getUserEmail());
     if (this._profilePromise) return this._profilePromise;
     this._profilePromise = netRequest('https://www.googleapis.com/oauth2/v1/userinfo', {
@@ -789,7 +1768,6 @@ const GDrive = {
   },
 
   tryRestoreFromStorage() {
-    if (CloudAuth.configured) return CloudAuth.connected;
     const clientId = DB.getGDriveClientId();
     const token = sessionStorage.getItem(this.SESSION_KEYS.token);
     const email = AppStorage.getItem(this.SESSION_KEYS.email) || '';
@@ -863,9 +1841,16 @@ const GDrive = {
     finally { this._tokenRequestPromise = null; }
   },
 
+  async silentRefresh({ noUi = false } = {}) {
+    // V7.4.2: prompt:'none' is used only for best-effort reconnects that must
+    // never interrupt the user with Google's account/consent dialog.
+    await this._requestToken({
+      promptMode: noUi ? 'none' : '',
+      accountHint: this.getUserEmail()
+    });
+  },
+
   async signIn() {
-    await CloudAuth.init();
-    if (CloudAuth.configured) { await AppStorage.flush();return CloudAuth.beginLink(this.getUserEmail()); }
     if (this.isSignedIn() || this.tryRestoreFromStorage()) return;
     const remembered = this.getUserEmail();
     // One user gesture, one Google flow. An empty prompt plus login_hint reuses
@@ -875,13 +1860,10 @@ const GDrive = {
   },
 
   async reconnect() {
-    if (CloudAuth.configured) return CloudAuth.beginLink(this.getUserEmail());
     await this._requestToken({ promptMode: '', accountHint: this.getUserEmail() });
   },
 
   async ensureToken(options = {}) {
-    await CloudAuth.init();
-    if (CloudAuth.configured) return CloudAuth.ensureSession();
     const interactive = !!options.interactive;
     if (this.isSignedIn()) return;
     if (this.tryRestoreFromStorage()) return;
@@ -900,13 +1882,19 @@ const GDrive = {
     }
   },
 
-  async tryRestoreToken() {
-    if(CloudAuth.configured)return CloudAuth.restore().catch(()=>false);
-    return this.tryRestoreFromStorage();
+  async tryRestoreToken({ noUi = true } = {}) {
+    if (this.tryRestoreFromStorage()) return true;
+    if (!DB.getGDriveClientId() || !this.getUserEmail()) return false;
+    try {
+      await this.silentRefresh({ noUi });
+      return true;
+    } catch (e) {
+      this._clearTokenOnly();
+      return false;
+    }
   },
 
-  async signOut() {
-    if (CloudAuth.configured) await CloudAuth.signOut();
+  signOut() {
     if (this._token && window.google?.accounts?.oauth2) {
       google.accounts.oauth2.revoke(this._token, () => {});
     }
@@ -924,10 +1912,36 @@ const GDrive = {
   },
 
   _buildCollections() {
-    return Object.fromEntries(Object.entries(COLLECTION_STORAGE_KEYS).map(([name,key])=>[name,AppStorage.getItem(key)||'[]']));
+    return {
+      words: DB.getWords(),
+      history: DB.getHistory(),
+      sentences: DB.getSentenceLog(),
+      imported: DB.getImportedSentences(),
+      boosted: DB.getBoostedWords(),
+      readingQuizHistory: DB.getReadingQuizHistory(),
+      essayHistory: DB.getEssayHistory(),
+      aiAskHistory: DB.getAiAskHistory(),
+      studyDays: StudyStreak.getDays()
+    };
   },
-  async _buildRecoveryPayload() {
-    return BackupWorker.snapshot(this._buildCollections(),{appVersion:APP_DISPLAY_VERSION,deviceId:this._getDeviceId(),revision:Date.now()});
+
+  _buildPayload() {
+    return BackupSchema.attach(this._buildCollections(), {
+      appVersion: APP_DISPLAY_VERSION,
+      deviceId: this._getDeviceId(),
+      revision: Date.now()
+    });
+  },
+
+  _buildRecoveryPayload() {
+    // Local recovery points live in this app's own IndexedDB. They do not need
+    // the expensive cloud checksum pass; keeping schemaVersion=8 preserves all
+    // collections, including studyDays, when the snapshot is restored.
+    return BackupSchema.attach(this._buildCollections(), {
+      appVersion: APP_DISPLAY_VERSION,
+      deviceId: this._getDeviceId(),
+      revision: Date.now()
+    });
   },
 
   _countPayloadItems(data = {}) {
@@ -954,7 +1968,7 @@ const GDrive = {
   async _listStudyStreakFiles() {
     const q = `name='${this.STUDY_STREAK_FILE}' and mimeType='application/json' and trashed=false`;
     const params = new URLSearchParams({ q, fields: 'files(id,name,createdTime,modifiedTime)', orderBy: 'modifiedTime desc', pageSize: '20' });
-    const response = await driveRequest('https://www.googleapis.com/drive/v3/files?' + params, {
+    const response = await netRequest('https://www.googleapis.com/drive/v3/files?' + params, {
       headers: { Authorization: 'Bearer ' + this._token }
     }, { timeout: 20000, retries: 1 }).catch(error => {
       if (error.message === 'TOKEN_EXPIRED') this._clearTokenOnly();
@@ -964,7 +1978,7 @@ const GDrive = {
   },
 
   async _downloadStudyStreakFile(fileId) {
-    const response = await driveRequest(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}?alt=media`, {
+    const response = await netRequest(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}?alt=media`, {
       headers: { Authorization: 'Bearer ' + this._token }
     }, { timeout: 20000, retries: 1 }).catch(error => {
       if (error.message === 'TOKEN_EXPIRED') this._clearTokenOnly();
@@ -1001,7 +2015,7 @@ const GDrive = {
     const body = '--' + boundary + '\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n'
       + JSON.stringify(metadata) + '\r\n--' + boundary + '\r\nContent-Type: application/json\r\n\r\n'
       + JSON.stringify(payload) + '\r\n--' + boundary + '--';
-    const response = await driveRequest('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart', {
+    const response = await netRequest('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart', {
       method: 'POST',
       headers: { Authorization: 'Bearer ' + this._token, 'Content-Type': 'multipart/related; boundary=' + boundary },
       body
@@ -1013,7 +2027,7 @@ const GDrive = {
   },
 
   async _updateStudyStreakFile(fileId, payload) {
-    const response = await driveRequest(`https://www.googleapis.com/upload/drive/v3/files/${encodeURIComponent(fileId)}?uploadType=media`, {
+    const response = await netRequest(`https://www.googleapis.com/upload/drive/v3/files/${encodeURIComponent(fileId)}?uploadType=media`, {
       method: 'PATCH',
       headers: { Authorization: 'Bearer ' + this._token, 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
@@ -1038,50 +2052,50 @@ const GDrive = {
   },
 
   async syncStudyStreak(options = {}) {
-    if(this._streakSyncPromise)return this._streakSyncPromise;
-    this._streakSyncPromise=(async()=>{
+    if (this._streakSyncPromise) return this._streakSyncPromise;
+    this._streakSyncPromise = (async () => {
       await this.ensureToken(options);
-      let merged=StudyStreak.getDays(),files=await this._listStudyStreakFiles(),verifiedDays=[];
-      for(let pass=0;pass<2;pass++){
-        const cloudDays=await this._readStudyStreakFiles(files);
-        merged=mergeStudyDays(merged,cloudDays,StudyStreak.getDays());
-        // An unchanged set needs no upload and no extra verification round.
-        if(files.length&&JSON.stringify(cloudDays)===JSON.stringify(merged)){
-          verifiedDays=cloudDays;break;
+      let merged = StudyStreak.getDays();
+      let files = await this._listStudyStreakFiles();
+
+      // Two union/write/read passes close the normal race where two devices add
+      // different dates at nearly the same time. No side ever overwrites a date
+      // that exists on the other side.
+      for (let pass = 0; pass < 2; pass++) {
+        const cloudDays = await this._readStudyStreakFiles(files);
+        merged = mergeStudyDays(merged, cloudDays);
+        const payload = this._buildStudyStreakPayload(merged);
+        if (!files.length) {
+          const created = await this._createStudyStreakFile(payload);
+          files = [{ id: created.id, name: this.STUDY_STREAK_FILE }];
+        } else {
+          await Promise.all(files.map(file => this._updateStudyStreakFile(file.id, payload)));
         }
-        const payload=this._buildStudyStreakPayload(merged);
-        if(!files.length){const created=await this._createStudyStreakFile(payload);
-          files=[{id:created.id,name:this.STUDY_STREAK_FILE}];}
-        else await Promise.all(files.map(file=>this._updateStudyStreakFile(file.id,payload)));
-        files=await this._listStudyStreakFiles();
-        verifiedDays=await this._readStudyStreakFiles(files);
-        const next=mergeStudyDays(merged,verifiedDays,StudyStreak.getDays());
-        if(JSON.stringify(next)===JSON.stringify(merged))break;
-        merged=next;
+        const verifiedFiles = await this._listStudyStreakFiles();
+        const verifiedDays = await this._readStudyStreakFiles(verifiedFiles);
+        const verifiedMerge = mergeStudyDays(merged, verifiedDays);
+        files = verifiedFiles;
+        if (JSON.stringify(verifiedMerge) === JSON.stringify(merged)) break;
+        merged = verifiedMerge;
       }
-      const commit=()=>{
-        const live=mergeStudyDays(merged,verifiedDays,StudyStreak.getDays());
-        StudyStreak.replace(live,{markPending:false});
-        const syncedAt=new Date().toISOString();StudyStreak.markSynced(syncedAt);
-        if(JSON.stringify(live)!==JSON.stringify(verifiedDays))StudyStreak.markPending();
-        refreshStudyStreakUI();return {studyDays:live,summary:StudyStreak.getSummary(),syncedAt};
-      };
-      // Foreground restore/import wins; background verification never changes
-      // collections while a user operation owns the data lock.
-      if(options.interactive)return commit();
-      if(Tasks.foregroundBusy){StudyStreak.markPending();return {deferred:true};}
-      return Tasks.run('streak-commit',commit,{exclusive:true});
+
+      StudyStreak.replace(merged, { markPending: false });
+      const syncedAt = new Date().toISOString();
+      StudyStreak.markSynced(syncedAt);
+      refreshStudyStreakUI();
+      return { studyDays: merged, summary: StudyStreak.getSummary(), syncedAt };
     })();
-    try{return await this._streakSyncPromise;}finally{this._streakSyncPromise=null;}
+    try { return await this._streakSyncPromise; }
+    finally { this._streakSyncPromise = null; }
   },
 
   scheduleStudyStreakSync(delay = 1200) {
     clearTimeout(this._streakSyncTimer);
     this._streakSyncTimer = null;
-    if (!navigator.onLine || document.hidden || !this.hasRememberedSession() || (!CloudAuth.configured&&!DB.getGDriveClientId())) return;
+    if (!navigator.onLine || !this.hasRememberedSession() || !DB.getGDriveClientId()) return;
     this._streakSyncTimer = setTimeout(() => {
       this._streakSyncTimer = null;
-      void Tasks.run('streak-sync', () => this.syncStudyStreak({ interactive: false }), { background: true }).catch(error => {
+      void Tasks.run('streak-sync', () => this.syncStudyStreak({ interactive: false }), { exclusive: true }).catch(error => {
         StudyStreak.markPending();
         refreshStudyStreakUI();
         console.warn('[GDrive] Study streak sync deferred.', error.message);
@@ -1145,7 +2159,7 @@ const GDrive = {
     await yieldForUI();
 
     progress('正在上傳 Google Drive…');
-    await driveRequest('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart', {
+    await netRequest('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart', {
       method: 'POST',
       headers: { Authorization: 'Bearer ' + this._token, 'Content-Type': 'multipart/related; boundary=' + boundary },
       body
@@ -1171,14 +2185,13 @@ const GDrive = {
     const folderId = DB.getGDriveFolderId();
     let q = "name contains 'vocab_backup_' and mimeType='application/json' and trashed=false";
     if (folderId) q += " and '" + folderId + "' in parents";
-    const params = new URLSearchParams({ q, fields: 'nextPageToken,files(id,name,createdTime,modifiedTime,description,version,md5Checksum,size)', orderBy: 'createdTime desc', pageSize: '20', ...(options.pageToken ? {pageToken:options.pageToken} : {}) });
-    const r = await driveRequest('https://www.googleapis.com/drive/v3/files?' + params, {
+    const params = new URLSearchParams({ q, fields: 'files(id,name,createdTime,description)', orderBy: 'createdTime desc', pageSize: '10' });
+    const r = await netRequest('https://www.googleapis.com/drive/v3/files?' + params, {
       headers: { Authorization: 'Bearer ' + this._token }
     }, { timeout: 20000, retries: 1 }).catch(error => {
       if (error.message === 'TOKEN_EXPIRED') this._clearTokenOnly();
       throw error;
     });
-    this._backupNextPage=r.data.nextPageToken||'';
     return r.data.files || [];
   },
 
@@ -1187,7 +2200,7 @@ const GDrive = {
     progress('正在確認 Google 登入…');
     await this.ensureToken(options);
     progress('正在下載備份…');
-    const r = await driveRequest('https://www.googleapis.com/drive/v3/files/' + encodeURIComponent(fileId) + '?alt=media', {
+    const r = await netRequest('https://www.googleapis.com/drive/v3/files/' + encodeURIComponent(fileId) + '?alt=media', {
       headers: { Authorization: 'Bearer ' + this._token }
     }, { timeout: 30000, retries: 1, responseType: 'text' }).catch(error => {
       if (error.message === 'TOKEN_EXPIRED') this._clearTokenOnly();
@@ -1200,28 +2213,34 @@ const GDrive = {
   },
 
   async autoRestoreIfCloudHasMore(options = {}) {
-    if (Router.quizActive || Router.essayActive) return {status:'busy'};
-    await this.ensureToken(options);await AppStorage.flush();
-    const expectedRevision=AppStorage.getStatus().revision;
-    const localVersion=AppStorage.contentVersion;
-    const files=await this.listBackups(options);
-    if(!files.length)return {status:'no_backup'};
-    const file=files[0];
-    const identity=[this.getUserEmail(),DB.getGDriveFolderId(),file.id,file.version||'',file.md5Checksum||'',file.modifiedTime||''].join('|');
-    let previous;try{previous=JSON.parse(AppStorage.getItem('cloudComparisonCache')||'null');}catch{}
-    if(previous?.identity===identity && previous.localVersion===localVersion && localVersion)return {status:'same',file};
-    const local=this._buildCollections();
-    const cloud=await this.downloadFile(file.id,options);
-    const comparison=await BackupWorker.compare(local,cloud);
-    if(AppStorage.getStatus().revision!==expectedRevision)return {status:'local_changed',...comparison,file};
-    const saveCheck=()=>AppStorage.setItem('cloudComparisonCache',JSON.stringify({identity,localVersion:AppStorage.contentVersion}));
-    if(comparison.same){saveCheck();return {status:'same',...comparison,file};}
-    if(comparison.conflict)return {status:'conflict',...comparison,file};
-    if(!comparison.cloudIsStrictSuperset)return {status:'skipped',...comparison,file};
-    if(AppStorage.getStatus().mode!=='indexeddb')return {status:'safety_blocked',...comparison,file};
-    if(Router.quizActive||Router.essayActive||Tasks.foregroundBusy)return {status:'busy',...comparison,file};
-    const syncedAt=await Tasks.run('auto-restore-commit',()=>this.applyDownload(cloud,'overwrite',{expectedRevision}),{exclusive:true});
-    saveCheck();return {status:'restored',syncedAt,...comparison,file};
+    await AppStorage.flush();
+    const expectedRevision = AppStorage.getStatus().revision;
+    const files = await this.listBackups(options);
+    const localPayload = this._buildPayload();
+    if (!files.length) {
+      return { status: 'no_backup', localCounts: this._countPayloadItems(localPayload), cloudCounts: null, file: null };
+    }
+    const latestFile = files[0];
+    const cloudData = await this.downloadFile(latestFile.id, options);
+    const comparison = this._comparePayloads(localPayload, cloudData);
+
+    if (comparison.same) {
+      return { status: 'same', ...comparison, file: latestFile };
+    }
+    if (comparison.conflict) {
+      return { status: 'conflict', ...comparison, file: latestFile };
+    }
+    if (!comparison.cloudIsStrictSuperset) {
+      return { status: 'skipped', ...comparison, file: latestFile };
+    }
+    if (AppStorage.getStatus().mode !== 'indexeddb') {
+      return { status: 'safety_blocked', ...comparison, file: latestFile };
+    }
+
+    await AppStorage.createRecoverySnapshot(this._buildRecoveryPayload(), 'before-auto-cloud-restore');
+    if (AppStorage.getStatus().revision !== expectedRevision) return { status: 'local_changed', ...comparison, file: latestFile };
+    const syncedAt = await this.applyDownload(cloudData, 'overwrite', { skipSnapshot: true, prevalidated: true, expectedRevision });
+    return { status: 'restored', syncedAt, ...comparison, file: latestFile };
   },
 
   async applyDownload(data, mode, options = {}) {
@@ -1238,13 +2257,107 @@ const GDrive = {
 
     if (!options.skipSnapshot) {
       progress('正在建立本機復原點…');
-      await AppStorage.createRecoverySnapshot(await this._buildRecoveryPayload(), 'before-manual-cloud-restore');
+      await AppStorage.createRecoverySnapshot(this._buildRecoveryPayload(), 'before-manual-cloud-restore');
       await yieldForUI();
     }
 
-    progress(mode==='overwrite'?'正在準備寫入資料…':'正在合併備份資料…');
-    const writes=await BackupWorker.restore(this._buildCollections(),data,mode);
+    const incoming = validation.collections;
+    const writes = {};
+    progress(mode === 'overwrite' ? '正在寫入備份資料…' : '正在合併備份資料…');
     await yieldForUI();
+
+    if (mode === 'overwrite') {
+      writes.vocabWords = JSON.stringify(incoming.words || []);
+      writes.practiceHistory = JSON.stringify(incoming.history || []);
+      await yieldForUI();
+      writes.sentenceLog = JSON.stringify(incoming.sentences || []);
+      writes.importedSentences = JSON.stringify(incoming.imported || []);
+      writes.boostedWords = JSON.stringify(incoming.boosted || []);
+      await yieldForUI();
+      writes.readingQuizHistory = JSON.stringify(incoming.readingQuizHistory || []);
+      writes.essayHistory = JSON.stringify(incoming.essayHistory || []);
+      writes.aiAskHistory = JSON.stringify(incoming.aiAskHistory || []);
+    } else {
+      const localWords = DB.getWords();
+      const wordKeys = new Set(localWords.map(w => String(w.english || w.wordEn || '').toLowerCase()).filter(Boolean));
+      const mergedWords = [...localWords];
+      for (const word of incoming.words || []) {
+        const key = String(word.english || word.wordEn || '').toLowerCase();
+        if (key && !wordKeys.has(key)) { wordKeys.add(key); mergedWords.push(word); }
+      }
+      writes.vocabWords = JSON.stringify(mergedWords);
+      await yieldForUI();
+
+      const historyMap = {};
+      [...DB.getHistory(), ...(incoming.history || [])].forEach(h => {
+        if (!historyMap[h.date] || h.total > historyMap[h.date].total) historyMap[h.date] = h;
+      });
+      writes.practiceHistory = JSON.stringify(Object.values(historyMap));
+
+      const localSentences = DB.getSentenceLog();
+      const sentenceKeys = new Set(localSentences.map(item => item.word + item.date));
+      const mergedSentences = [...localSentences];
+      for (const item of incoming.sentences || []) {
+        const key = item.word + item.date;
+        if (!sentenceKeys.has(key)) { sentenceKeys.add(key); mergedSentences.push(item); }
+      }
+      writes.sentenceLog = JSON.stringify(mergedSentences);
+
+      const localImported = DB.getImportedSentences();
+      const importedKeys = new Set(localImported.map(item => item.word + item.english));
+      const mergedImported = [...localImported];
+      for (const item of incoming.imported || []) {
+        const key = item.word + item.english;
+        if (!importedKeys.has(key)) { importedKeys.add(key); mergedImported.push(item); }
+      }
+      writes.importedSentences = JSON.stringify(mergedImported);
+      writes.boostedWords = JSON.stringify([...new Set([...DB.getBoostedWords(), ...(incoming.boosted || [])])]);
+      await yieldForUI();
+
+      if (Array.isArray(incoming.readingQuizHistory)) {
+        const readingMap = {};
+        [...DB.getReadingQuizHistory(), ...incoming.readingQuizHistory].forEach(group => {
+          if (!readingMap[group.date]) readingMap[group.date] = { ...group, sessions: [...(group.sessions || [])] };
+          else {
+            const existing = new Set((readingMap[group.date].sessions || []).map(session => String(session.ts || session.id || '')));
+            for (const session of group.sessions || []) {
+              const key = String(session.ts || session.id || '');
+              if (!existing.has(key)) { readingMap[group.date].sessions.push(session); existing.add(key); }
+            }
+          }
+        });
+        writes.readingQuizHistory = JSON.stringify(Object.values(readingMap));
+      }
+
+      if (Array.isArray(incoming.essayHistory)) {
+        const essayMap = {};
+        [...DB.getEssayHistory(), ...incoming.essayHistory].forEach(group => {
+          if (!essayMap[group.date]) essayMap[group.date] = { ...group, sessions: [...(group.sessions || [])] };
+          else {
+            const existing = new Set((essayMap[group.date].sessions || []).map(session => session.ts));
+            for (const session of group.sessions || []) {
+              if (!existing.has(session.ts)) { essayMap[group.date].sessions.push(session); existing.add(session.ts); }
+            }
+          }
+        });
+        writes.essayHistory = JSON.stringify(Object.values(essayMap));
+      }
+
+      if (Array.isArray(incoming.aiAskHistory)) {
+        const localAi = DB.getAiAskHistory();
+        const ids = new Set(localAi.map(entry => entry.id));
+        writes.aiAskHistory = JSON.stringify([...localAi, ...incoming.aiAskHistory.filter(entry => !ids.has(entry.id))]);
+      }
+    }
+
+    await yieldForUI();
+    if (validation.sourceSchemaVersion >= 8) {
+      const nextDays = mode === 'overwrite'
+        ? mergeStudyDays(incoming.studyDays || [])
+        : mergeStudyDays(StudyStreak.getDays(), incoming.studyDays || []);
+      writes.studyActivityDays = JSON.stringify(nextDays);
+    }
+
     await AppStorage.setItemsBatch(writes, { expectedRevision });
 
     if (validation.sourceSchemaVersion >= 8) {
@@ -1370,7 +2483,6 @@ const TTS = {
 // ===== ROUTER — FIX: quiz guard applies to ALL nav clicks including practice =====
 const Router = {
   currentView: 'home',
-  scope: new RequestScope(),
   quizActive: false,
   essayActive: false,
   navigate(view, params = {}, force = false) {
@@ -1398,8 +2510,6 @@ const Router = {
     this._doNavigate(view, params);
   },
   _doNavigate(view, params) {
-    Modal.hide();Drafts.flush();this.scope.cancel();this.scope=new RequestScope();
-    if(this.currentView==='stats'){Views.stats.chartInstance?.destroy();Views.stats.chartInstance=null;}
     if (this.currentView === 'practice') Views.practice?.cleanupQuiz?.();
     document.querySelectorAll('.nav-btn').forEach(btn => btn.classList.toggle('active', btn.dataset.view === view));
     this.currentView = view;
@@ -1432,13 +2542,12 @@ Views.home = {
       const key=`${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,'0')}-${String(date.getDate()).padStart(2,'0')}`;
       return `<span class="streak-day ${practicedDates.has(key)?'is-done':''}" title="${escapeAttr(key)}"><b>${weekdayNames[date.getDay()]}</b><i></i></span>`;
     }).join('');
-    const googleConnected = GDrive.isSignedIn();
-    const cloudLabel=CloudAuth.state==='restoring'?'恢復連線中…':googleConnected?'Google 已連線':GDrive.hasRememberedSession()?'需要連結 Google':'本機模式';
+    const googleConnected = GDrive.isSignedIn() || GDrive.hasRememberedSession();
     container.innerHTML = `
       <div class="home-layout">
         <div class="home-welcome">
           <div><h1>今天，練習一點英文</h1><p>持續學習，讓改變悄悄發生。</p></div>
-          <span id="home-cloud-state" class="home-cloud-state ${googleConnected?'is-connected':''}">${escapeHTML(cloudLabel)}</span>
+          <span class="home-cloud-state ${googleConnected?'is-connected':''}">${googleConnected?'Google 已連線':'本機模式'}</span>
         </div>
         <section class="study-streak-card" aria-labelledby="study-streak-title">
           <div class="study-streak-heading">
@@ -1500,7 +2609,6 @@ Views.home = {
     try {
       const word = words[Math.floor(Math.random() * words.length)];
       const result = await Gemini.generateSentence(word);
-      if(!heroContent.isConnected)return;
       if (!result.en || !result.zh) throw new Error('Invalid');
       if (!document.getElementById('hero-content')) return;
       const entry = { date: todayStr(), wordEn: word.english, wordZh: word.chinese, wordPos: word.partOfSpeech, en: result.en, zh: result.zh };
@@ -1585,7 +2693,6 @@ function bindPracticeModeSelector(container, currentMode = 'quiz') {
   const selector = container.querySelector('#practice-mode-select');
   if (!selector) return;
   selector.addEventListener('change', (e) => {
-    Drafts.flush();Router.scope.cancel();Router.scope=new RequestScope();
     const mode = e.target.value;
     if (mode === currentMode) return;
     Router.essayActive = false;
@@ -1701,7 +2808,7 @@ Views.practice = {
   },
   renderSetup(container) {
     Router.quizActive = false;
-    const totalWords = DB.readWords().length;
+    const totalWords = DB.getWords().length;
     container.innerHTML = `
       <div class="section-header"><h1 class="section-title">練習</h1></div>
       ${renderPracticeModeSelector('quiz')}
@@ -2249,7 +3356,7 @@ Views.readingQuiz = {
 
   renderSetup(container) {
     Router.quizActive = false;
-    const totalWords = DB.readWords().length;
+    const totalWords = DB.getWords().length;
     const hasKey = !!DB.getApiKey();
     const canStart = totalWords >= 5 && hasKey;
     container.innerHTML = `
@@ -2283,12 +3390,10 @@ Views.readingQuiz = {
       if (status) status.innerHTML = `<div class="reading-loading"><div class="loading-dots"><span></span><span></span><span></span></div><span>AI 正在生成閱讀文章與同義字測驗...</span></div>`;
       try {
         const result = await Gemini.generateReadingQuiz(selected);
-        if(!container.isConnected)return;
         this.state = { ...this._blankState(), phase: 'quiz', words: selected, article: result.article, questions: result.questions, answers: {}, submitted: false, score: 0, correct: 0 };
         Router.quizActive = true;
         this.renderQuiz(container);
       } catch(err) {
-        if(!container.isConnected||err.message==='REQUEST_CANCELLED')return;
         let msg = '文章閱讀測驗生成失敗，請稍後重試';
         if (err.message === 'NO_API_KEY') msg = '請先在設定頁填入 Gemini API Key';
         else if (err.message === 'NETWORK_ERROR') msg = '網路連線失敗，請確認連線後重試';
@@ -2518,14 +3623,12 @@ Views.readingQuiz = {
     if (btn) btn.disabled = true;
     try {
       const zh = await Gemini.translateReadingArticle(this.state.article, this.state.words);
-      if(!panel.isConnected||panel!==document.getElementById('reading-article-zh-panel'))return;
       this.state.articleZh = zh;
       this._setArticleTranslationPanel({
         open: true,
         html: this._buildArticleZhHtml(zh, this.state.words)
       });
     } catch (err) {
-      if(!panel.isConnected||err.message==='REQUEST_CANCELLED')return;
       let msg = '文章翻譯失敗，請稍後重試';
       if (err.message === 'NO_API_KEY') msg = '請先在設定頁填入 Gemini API Key';
       else if (err.message === 'NETWORK_ERROR') msg = '網路連線失敗，請確認連線後重試';
@@ -2585,11 +3688,10 @@ Views.database = {
   deleteMode: false, selectedIds: new Set(),
   aiCorrectMode: false, aiCorrectIds: new Set(),
   pageSize: 80,
-  pageIndex: 0,
+  visibleCount: 80,
   sortMode: AppStorage.getItem('dbSortMode') || 'createdAt',
-  render(container) { this.deleteMode = false; this.selectedIds = new Set(); this.aiCorrectMode = false; this.aiCorrectIds = new Set(); this.pageIndex=0;this.renderList(container); },
+  render(container) { this.deleteMode = false; this.selectedIds = new Set(); this.aiCorrectMode = false; this.aiCorrectIds = new Set(); this.visibleCount=this.pageSize;this.renderList(container); },
   _sortWords(words) {
-    return DB.cache.compute('wordsSorted:'+this.sortMode,['vocabWords'],()=>{
     const arr = [...words];
     if (this.sortMode === 'alpha') {
       arr.sort((a, b) => a.english.localeCompare(b.english));
@@ -2599,31 +3701,17 @@ Views.database = {
       // createdAt: newest first (default)
       arr.sort((a, b) => {
         const ta = a.createdAt || ''; const tb = b.createdAt || '';
-        if (ta === tb) return String(b.id).localeCompare(String(a.id));
+        if (ta === tb) return b.id.localeCompare(a.id);
         return tb.localeCompare(ta);
       });
     }
     return arr;
-    });
-  },
-  _pageWords(words){
-    this.pageIndex=Math.max(0,Math.min(this.pageIndex,Math.ceil(words.length/this.pageSize)-1));
-    return words.slice(this.pageIndex*this.pageSize,(this.pageIndex+1)*this.pageSize);
-  },
-  _pager(total){
-    if(total<=this.pageSize)return '';
-    return `<div class="db-pagination"><button class="btn-secondary" id="db-page-prev" ${this.pageIndex===0?'disabled':''}>上一頁</button><span>${this.pageIndex+1} / ${Math.ceil(total/this.pageSize)} 頁・共 ${total} 個</span><button class="btn-secondary" id="db-page-next" ${(this.pageIndex+1)*this.pageSize>=total?'disabled':''}>下一頁</button></div>`;
-  },
-  _bindPager(container){
-    for(const [id,delta] of [['db-page-prev',-1],['db-page-next',1]])container.querySelector('#'+id)?.addEventListener('click',()=>{
-      this.pageIndex+=delta;this._refreshWordList(container);container.querySelector('.db-list-scroll')?.scrollTo({top:0});
-    });
   },
   // Lightweight refresh: update only the word list + badge without destroying lookup card state
   _refreshWordList(container) {
-    const rawWords = DB.readWords();
+    const rawWords = DB.getWords();
     const allWords = this._sortWords(rawWords);
-    const words = this._pageWords(allWords);
+    const words = allWords.slice(0,this.visibleCount);
     const dm  = this.deleteMode;  const sel = this.selectedIds;
     const acm = this.aiCorrectMode; const acs = this.aiCorrectIds;
     // Update badge
@@ -2651,8 +3739,8 @@ Views.database = {
           ${(!dm&&!acm)?`<button class="db-word-edit-btn" data-edit="${escapeAttr(w.id)}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg></button>`:''}
         </div>
       </div>`;
-    }).join('') + this._pager(allWords.length);
-    this._bindPager(container);
+    }).join('') + (words.length < allWords.length ? `<button class="db-load-more" id="db-load-more">載入更多（已顯示 ${words.length} / ${allWords.length}）</button>` : '');
+    listEl.querySelector('#db-load-more')?.addEventListener('click',()=>{this.visibleCount+=this.pageSize;this._refreshWordList(container);});
     // Re-bind TTS and edit buttons on the refreshed list
     listEl.querySelectorAll('.db-tts-btn').forEach(btn => {
       btn.addEventListener('click', (e) => {
@@ -2686,13 +3774,12 @@ Views.database = {
   },
 
   async renderList(container) {
-    const rawWords = DB.readWords();
+    const rawWords = DB.getWords();
     const allWords = this._sortWords(rawWords);
-    const words = this._pageWords(allWords);
+    const words = allWords.slice(0,this.visibleCount);
     const dm = this.deleteMode; const sel = this.selectedIds;
     const acm = this.aiCorrectMode; const acs = this.aiCorrectIds;
     const ecdictMeta = await ECDICT.getMeta();
-    if(!container.isConnected||Router.currentView!=='database')return;
     const ecdictLoaded = ecdictMeta && ecdictMeta.count > 0;
     container.innerHTML = `
       <div class="section-header">
@@ -2805,11 +3892,11 @@ Views.database = {
                 </div>
               </div>`;
             }).join('')}
-        ${this._pager(allWords.length)}
+        ${words.length < allWords.length ? `<button class="db-load-more" id="db-load-more">載入更多（已顯示 ${words.length} / ${allWords.length}）</button>` : ''}
       </div></div>
       <div style="height:20px"></div>
     `;
-    this._bindPager(container);
+    container.querySelector('#db-load-more')?.addEventListener('click',()=>{this.visibleCount+=this.pageSize;this._refreshWordList(container);});
     // TTS buttons in word list
     container.querySelectorAll('.db-tts-btn').forEach(btn => {
       btn.addEventListener('click', (e) => {
@@ -2897,10 +3984,8 @@ Views.database = {
       aiSearchBtn && (aiSearchBtn.disabled = true);
       try {
         const entries = await Gemini.lookupWord(word);
-        if(!container.isConnected)return;
         renderAIResults(entries);
       } catch(err) {
-        if(!container.isConnected||err.message==='REQUEST_CANCELLED')return;
         let msg = '查詢失敗，請稍後再試';
         const detail = String(err?.message || '');
         if (detail === 'NO_API_KEY') msg = '請先在設定頁填入 Gemini API Key';
@@ -3051,7 +4136,7 @@ Views.database = {
     // Sort chips
     container.querySelectorAll('.db-sort-chip').forEach(btn => btn.addEventListener('click', () => {
       this.sortMode = btn.dataset.sort;
-      this.pageIndex = 0;
+      this.visibleCount = this.pageSize;
       AppStorage.setItem('dbSortMode', this.sortMode);
       this.renderList(container);
     }));
@@ -3112,7 +4197,6 @@ Views.database = {
     }));
   },
   async runAiCorrect(container) {
-    const scope=Router.scope;
     const ids = [...this.aiCorrectIds];
     const words = DB.getWords().filter(w => ids.includes(w.id));
     if (!words.length) return;
@@ -3123,21 +4207,17 @@ Views.database = {
       <div style="text-align:center;padding:20px 0">
         <span class="ai-spinner" style="width:32px;height:32px;border-width:3px;display:inline-block"></span>
         <div id="ai-correct-status" style="margin-top:12px;color:var(--text-secondary);font-size:14px">正在查詢 ${words.length} 個單字…</div>
-      </div><button class="btn-secondary" id="ai-correct-cancel" style="width:100%">取消查詢</button>`);
-    document.getElementById('ai-correct-cancel').addEventListener('click',()=>{if(scope===Router.scope){scope.cancel();Router.scope=new RequestScope();}Modal.hide();});
+      </div>`);
 
     const results = [];
     for (let i = 0; i < words.length; i++) {
-      if(!container.isConnected||scope!==Router.scope||document.getElementById('modal-overlay').classList.contains('hidden'))return;
       const w = words[i];
       const statusEl = document.getElementById('ai-correct-status');
       if (statusEl) statusEl.textContent = `查詢中 ${i+1} / ${words.length}：${w.english}`;
       try {
         const entries = await Gemini.lookupWord(w.english);
-        if(!container.isConnected)return;
         results.push({ original: w, entries: (entries && entries.length) ? entries : null, error: null });
       } catch(e) {
-        if(!container.isConnected||scope!==Router.scope||e.message==='REQUEST_CANCELLED')return;
         results.push({ original: w, entries: null, error: e.message || '查詢失敗' });
       }
     }
@@ -3161,7 +4241,7 @@ Views.database = {
           if (!r.entries || !r.entries.length) {
             return `<div style="padding:10px;background:var(--surface);border-radius:8px;border:1px solid var(--border);opacity:0.6">
               <span style="font-weight:600;color:var(--text-primary)">${escapeHTML(r.original.english)}</span>
-              <span style="margin-left:8px;font-size:12px;color:var(--danger)">❌ ${escapeHTML(r.error || '查無結果')}</span>
+              <span style="margin-left:8px;font-size:12px;color:var(--danger)">❌ ${r.error || '查無結果'}</span>
             </div>`;
           }
           const rawPhonetic = (r.entries[0].phonetic || '').replace(/^\/+|\/+$/g, '');
@@ -3170,7 +4250,7 @@ Views.database = {
           return `<div class="ai-correct-item" data-word-id="${escapeAttr(r.original.id)}" data-phonetic="${escapeAttr(rawPhonetic)}" style="padding:12px;background:var(--surface);border-radius:10px;border:1px solid var(--border)">
             <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap">
               <span style="font-weight:700;font-size:15px;color:var(--text-primary)">${escapeHTML(r.entries[0].english)}</span>
-              ${rawPhonetic ? `<span style="font-size:12px;color:var(--text-secondary)">/${escapeHTML(rawPhonetic)}/</span>` : ''}
+              ${rawPhonetic ? `<span style="font-size:12px;color:var(--text-secondary)">/${rawPhonetic}/</span>` : ''}
               <span style="font-size:11px;color:var(--text-muted);margin-left:auto">原：${escapeHTML(r.original.partOfSpeech||'—')} ${escapeHTML(r.original.chinese)}</span>
             </div>
             <div style="display:flex;gap:8px;align-items:center;margin-bottom:6px">
@@ -3464,14 +4544,12 @@ Views.essay = {
         const feedback = isAiMode
           ? await Gemini.reviewEssayFree(essay, topic)
           : await Gemini.reviewEssay(essay, pool);
-        if(!container.isConnected)return;
         Router.essayActive = false;
         this._renderFeedback(resultArea, feedback, essay, pool, container);
         const annotatedHtml = Views.essay._buildAnnotatedEssay(essay, (feedback.grammar||[]).map((g,i)=>({...g,idx:i})));
         DB.addEssaySession({ date: todayStr(), words: pool, essay, feedback: JSON.stringify(feedback), score: feedback.score, annotatedHtml, essayMode: isAiMode?'ai':'vocab', topic: isAiMode?topic:'' });
         Drafts.remove('essay');
       } catch(e) {
-        if(!container.isConnected||e.message==='REQUEST_CANCELLED')return;
         const raw = e.message || '';
         let msg = '❌ 批改失敗', detail = '';
         if (raw === 'NO_API_KEY')          msg = '🔑 請先在設定頁填入 Gemini API Key';
@@ -3727,8 +4805,29 @@ Views.aiAsk = {
       resultArea.innerHTML = '<div class="ai-loading"><span class="ai-spinner"></span>AI 回覆中...</div>';
 
       try {
-        const answer=await Gemini.answerQuestion(q);
-        if(!container.isConnected)return;
+        const systemPrompt = `You are an English language tutor. Answer the user's English-related questions clearly and helpfully in Traditional Chinese (繁體中文), unless the user asks in English, in which case reply in English. When correcting sentences, show the corrected version and explain why. Be concise but thorough.`;
+        const apiKey = DB.getApiKey();
+        if (!apiKey) throw new Error('NO_API_KEY');
+        const fullPrompt = systemPrompt + '\n\nUser question:\n' + q;
+        const body = JSON.stringify({
+          contents: [{ parts: [{ text: fullPrompt }] }],
+          generationConfig: { temperature: 0.5, maxOutputTokens: 8192 }
+        });
+        let answer = ''; let lastErr = null;
+        for (const model of Gemini._getModelList()) {
+          try {
+            const raw = await Gemini._callModel(model, body, apiKey);
+            if (!raw) { lastErr = new Error('EMPTY_RESPONSE'); continue; }
+            // Strip thinking tags if any
+            answer = raw.replace(/<thinking>[\s\S]*?<\/thinking>/gi, '').trim();
+            break;
+          } catch(err) {
+            if (err.message === 'NETWORK_ERROR') throw err;
+            if (err.fallback) { lastErr = err; continue; }
+            throw err;
+          }
+        }
+        if (!answer) throw (lastErr || new Error('API_ERROR'));
         const id = this._makeId();
         DB.addAiAskEntry({ id, question: q, answer, ts: Date.now() });
         Drafts.remove('aiAsk');
@@ -3748,7 +4847,6 @@ Views.aiAsk = {
         // Refresh history list
         this._renderHistoryList(container, DB.getAiAskHistory(), 'new');
       } catch(err) {
-        if(!container.isConnected||err.message==='REQUEST_CANCELLED')return;
         let msg = 'AI 回覆失敗，請稍後再試';
         if (err.message === 'NO_API_KEY') msg = '請先在設定頁填入 API Key';
         else if (err.message?.includes('NETWORK_ERROR')) msg = '網路錯誤';
@@ -3830,8 +4928,11 @@ Views.stats = {
   period: 7, chartInstance: null, mode: 'quiz',
   render(container) { this.period = 7; this.mode = 'quiz'; this.renderStats(container); },
   renderStats(container) {
-    const allHistory = DB.readHistory();
-    const {totalSessions,totalAnswered,overallPct}=DB.getHistorySummary();
+    const allHistory = DB.getHistory();
+    const totalSessions = allHistory.length;
+    const totalAnswered = allHistory.reduce((s,h)=>s+(h.total||0),0);
+    const totalCorrect  = allHistory.reduce((s,h)=>s+(h.correct||0),0);
+    const overallPct    = totalAnswered > 0 ? Math.round(totalCorrect/totalAnswered*100) : 0;
 
     container.innerHTML = `
       <div class="section-header"><h1 class="section-title">練習統計</h1></div>
@@ -3882,11 +4983,10 @@ Views.stats = {
     this.updateChart(allHistory);
 
   },
-  async updateChart(allHistory) {
-    const generation=this.chartGeneration=(this.chartGeneration||0)+1;
+  updateChart(allHistory) {
     const labels=[]; const now=new Date();
     for(let i=this.period-1;i>=0;i--){ const d=new Date(now); d.setDate(d.getDate()-i); labels.push(`${d.getFullYear()}/${String(d.getMonth()+1).padStart(2,'0')}/${String(d.getDate()).padStart(2,'0')}`); }
-    const dataMap=DB.getHistorySummary().byDate;
+    const dataMap={}; allHistory.forEach(h=>{dataMap[h.date]=h;});
     const totalData=labels.map(d=>dataMap[d]?.total||0); const correctData=labels.map(d=>dataMap[d]?.correct||0); const wrongData=labels.map(d=>dataMap[d]?.wrong||0);
     const accuracyData=labels.map((d,i)=>totalData[i]>0?Math.round((correctData[i]/totalData[i])*100):null);
     const shortLabels=labels.map(d=>d.slice(5));
@@ -3899,8 +4999,6 @@ Views.stats = {
     }
     if(this.chartInstance) this.chartInstance.destroy();
     const ctx=document.getElementById('stats-chart'); if(!ctx) return;
-    const {TrendChart}=await import('./chart-renderer.js?v=V7_5_0');
-    if(generation!==this.chartGeneration||!ctx.isConnected||Router.currentView!=='stats')return;
     this.chartInstance = TrendChart.create(ctx, {
       labels: shortLabels,
       correctData,
@@ -3909,7 +5007,6 @@ Views.stats = {
     });
   },
   renderEssayStats(container) {
-    this.chartGeneration=(this.chartGeneration||0)+1;this.chartInstance?.destroy();this.chartInstance=null;
     const history = DB.getEssayHistory();
 
     // Flatten all sessions into a single ordered list (newest first)
@@ -4079,7 +5176,6 @@ Views.stats = {
   },
 
   renderAiAskStats(container) {
-    this.chartGeneration=(this.chartGeneration||0)+1;this.chartInstance?.destroy();this.chartInstance=null;
     const history = DB.getAiAskHistory();
     const statsModeSel = `
       <div class="stats-mode-bar">
@@ -4205,7 +5301,6 @@ Views.stats = {
 
 
   renderReadingStats(container) {
-    this.chartGeneration=(this.chartGeneration||0)+1;this.chartInstance?.destroy();this.chartInstance=null;
     const history = DB.getReadingQuizHistory();
     const flatSessions = [];
     history.forEach(h => (h.sessions || []).forEach((session, si) => flatSessions.push({ date: h.date, s: session, si })));
@@ -4374,7 +5469,6 @@ Views.stats = {
     if (btn) btn.disabled = true;
     try {
       const zh = await Gemini.translateReadingArticle(s.article, readingWords);
-      if(!panel.isConnected||panel!==document.getElementById('reading-stat-article-zh-panel'))return;
       s.articleZh = zh;
       const history = DB.getReadingQuizHistory();
       const day = history.find(h => h.date === item.date);
@@ -4388,7 +5482,6 @@ Views.stats = {
         html: Views.readingQuiz._buildArticleZhHtml(zh, readingWords)
       });
     } catch (err) {
-      if(!panel.isConnected||err.message==='REQUEST_CANCELLED')return;
       let msg = '文章翻譯失敗，請稍後重試';
       if (err.message === 'NO_API_KEY') msg = '請先在設定頁填入 Gemini API Key';
       else if (err.message === 'NETWORK_ERROR') msg = '網路連線失敗，請確認連線後重試';
@@ -4412,7 +5505,6 @@ Views.stats = {
 // ===========================
 Views.settings = {
   render(container) {
-    if(!CloudAuth.configured&&DB.getGDriveClientId())void GDrive._loadGIS().catch(()=>{});
     const savedKey    = DB.getApiKey();
     const hasKey      = !!savedKey;
     const savedModel  = DB.getModel();
@@ -4452,15 +5544,15 @@ Views.settings = {
 
     const importedSentences = DB.getImportedSentences();
     const aiSentences       = DB.getSentenceLog();
-    const totalSentences    = DB.getCombinedSentenceLog(Infinity).length;
-    const totalWords        = DB.readWords().length;
-    const totalStats        = DB.readHistory().length;
+    const totalSentences    = DB.getCombinedSentenceLog().length;
+    const totalWords        = DB.getWords().length;
+    const totalStats        = DB.getHistory().length;
     const readingHistoryAll = DB.getReadingQuizHistory();
     const totalReading      = readingHistoryAll.reduce((s,h) => s + (h.sessions||[]).length, 0);
     const readingAvg        = totalReading ? Math.round(readingHistoryAll.reduce((sum,h) => sum + (h.sessions||[]).reduce((ss,x)=>ss+(Number(x.score)||0),0),0) / totalReading) : 0;
     const essayHistoryAll   = DB.getEssayHistory();
     const totalEssay        = essayHistoryAll.reduce((s,h) => s + (h.sessions||[]).length, 0);
-    const totalAiAsk        = DB.readAiAskHistory().length;
+    const totalAiAsk        = DB.getAiAskHistory().length;
     const studyDays         = StudyStreak.getDays();
     const streakSummary     = StudyStreak.getSummary();
     const streakSyncState   = StudyStreak.getSyncState();
@@ -4477,15 +5569,10 @@ Views.settings = {
           Google Drive 雲端同步
         </div>
         <div class="settings-card">
-          <div class="cloud-service-config">
-            <label for="gd-auth-worker-url">自動續登入服務網址</label>
-            <div class="cloud-service-input-row"><input id="gd-auth-worker-url" type="url" class="form-input" inputmode="url" autocapitalize="none" autocomplete="off" placeholder="https://…workers.dev" value="${escapeAttr(CloudAuth.url||AppStorage.getItem('googleAuthWorkerUrl')||'')}"><button id="gd-auth-save-btn" type="button" class="btn-secondary">儲存</button></div>
-            <p id="cloud-service-status" role="status">${CloudAuth.configured?'首次連結後，重新開啟會在背景自動恢復登入。':'填入已部署的授權 Worker 網址即可啟用自動續登入；請依 SETUP_AUTO_LOGIN.md 設定。'}</p>
-          </div>
-          ${(signedIn || remembered || CloudAuth.configured) ? `
+          ${(signedIn || remembered) ? `
             <div class="fb-status-row">
               <div class="fb-status-dot ${signedIn ? 'connected' : 'disconnected'}"></div>
-              <span class="fb-status-text">${signedIn ? '已連線' : CloudAuth.configured ? 'Google 尚未連線' : '已記住帳號'}${emailLabel?'：'+escapeHTML(emailLabel):''}</span>
+              <span class="fb-status-text">${signedIn ? '已登入' : '已記住帳號，背景自動續登入'}：${escapeHTML(emailLabel)}</span>
             </div>
             ${lastSync ? '<div class="fb-last-sync" style="margin-bottom:10px">上次同步：' + lastSync + '</div>' : ''}
             <div class="settings-btn-row" style="margin-bottom:10px">
@@ -4504,7 +5591,7 @@ Views.settings = {
               <button class="btn-secondary" id="gd-streak-sync-btn" type="button">立即同步</button>
             </div>
             <button class="btn-secondary" id="local-recovery-btn" style="width:100%;margin-top:9px">本機復原點</button>
-            <div class="settings-tip" style="margin-top:8px">開啟 APP 後直接進入主畫面。${CloudAuth.configured?'首次連結後會在背景恢復 Google 連線；授權失效時僅顯示重新連結提示。':'設定自動續登入服務後，可在重新開啟時恢復 Google 連線。'}</div>
+            ${remembered ? '<div class="settings-tip" style="margin-top:8px">開啟 APP 後會直接進入主畫面並嘗試無畫面續登入；上傳/還原也不需要先另外按登入。僅在 Google 判定授權已失效時才會顯示官方授權畫面。</div>' : ''}
             <button class="btn-fb-signout-bottom" id="gd-signout-btn" style="margin-top:10px">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:15px;height:15px"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
               登出 Google（${escapeHTML(emailLabel)}）
@@ -4514,9 +5601,9 @@ Views.settings = {
               <div class="fb-status-dot disconnected"></div>
               <span class="fb-status-text">${clientId ? '尚未登入 Google' : '請先在下方填入 OAuth Client ID'}</span>
             </div>
+            ${clientId ? '<button class="btn-fb-signin" id="gd-signin-btn" style="width:100%;padding:9px 12px;font-size:13px">' + svgG + ' 使用 Google 帳號登入</button>' : ''}
             <div class="settings-tip" style="margin-top:8px;margin-bottom:0">登入後可將資料備份至 Google Drive，也可在雲端資料較多時自動同步到本機。設定請見下方。</div>
           `}
-          ${(clientId||CloudAuth.configured)?`<button class="btn-fb-signin" id="gd-signin-btn" style="width:100%;padding:12px;margin-top:12px" ${signedIn?'hidden':''}>${svgG} ${CloudAuth.configured?'連結 Google':'使用 Google 帳號登入'}</button>`:''}
         </div>
 
         <div class="settings-section-label" style="margin-top:16px">
@@ -4832,7 +5919,7 @@ Views.settings = {
               ${Gemini.AVAILABLE_MODELS.map(m =>
                 `<option value="${escapeHTML(m.id)}" ${savedModel===m.id?'selected':''}>${escapeHTML(m.label)}${m.tag ? '（' + escapeHTML(m.tag) + '）' : ''}</option>`
               ).join('')}
-            </select><button id="refresh-ai-models-btn" class="btn-secondary" type="button" style="width:100%;margin-top:10px">更新模型清單</button>
+            </select>
           </div>
           <a class="api-link" href="https://aistudio.google.com/app/apikey" target="_blank">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
@@ -4914,21 +6001,6 @@ Views.settings = {
       <input type="file" id="one-click-import-input" accept=".csv,.zip" multiple style="display:none">
     `;
 
-    document.getElementById('gd-auth-save-btn')?.addEventListener('click',async event=>{
-      const button=event.currentTarget;button.disabled=true;button.textContent='確認中…';
-      try{
-        const value=document.getElementById('gd-auth-worker-url').value;
-        await CloudAuth.configure(value,DB.getGDriveClientId());await AppStorage.flush();
-        showToast('✓ 自動續登入服務設定已儲存');if(container.isConnected)this.render(container);
-      }catch(error){showToast(readableError(error),5000);}
-      finally{if(button.isConnected){button.disabled=false;button.textContent='儲存';}}
-    });
-    document.getElementById('refresh-ai-models-btn')?.addEventListener('click',async event=>{
-      const button=event.currentTarget;button.disabled=true;button.textContent='查詢中…';
-      try{await ModelCatalog.ensure(DB.getApiKey(),{force:true});showToast('✓ 已更新可用模型清單');if(container.isConnected)this.render(container);}
-      catch(error){showToast(readableError(error),5000);}
-      finally{if(button.isConnected){button.disabled=false;button.textContent='更新模型清單';}}
-    });
     document.getElementById('ui-theme-select')?.addEventListener('change',event=>{
       Theme.set(event.target.value);
       showToast('✓ 外觀主題已更新');
@@ -5072,7 +6144,7 @@ Views.settings = {
 
     // ── 2. 單字庫 ──
     document.getElementById('export-vocab-btn').addEventListener('click', () => {
-      if (!DB.readWords().length) { showToast('資料庫是空的'); return; }
+      if (!DB.getWords().length) { showToast('資料庫是空的'); return; }
       downloadCSV(DB.exportCSV(), `vocab_${dateTag}.csv`);
       showToast('✓ 單字 CSV 已匯出');
     });
@@ -5097,7 +6169,7 @@ Views.settings = {
 
     // ── 4. 練習統計 ──
     document.getElementById('export-stats-settings-btn').addEventListener('click', () => {
-      if (!DB.readHistory().length) { showToast('尚無統計資料'); return; }
+      if (!DB.getHistory().length) { showToast('尚無統計資料'); return; }
       downloadCSV(DB.exportStatsCSV(), `stats_${dateTag}.csv`);
       showToast('✓ 統計 CSV 已匯出');
     });
@@ -5150,65 +6222,163 @@ Views.settings = {
     });
 
     // ── 5. 一鍵匯出：打包成單一 ZIP 一次下載 ──
-    document.getElementById('one-click-export-btn').addEventListener('click',async event=>{
-      const button=event.currentTarget;let finish;
-      try{
-        finish=Tasks.start('local-export',{exclusive:true});button.disabled=true;
-        await AppStorage.flush();
-        const result=await ZipClient.pack(GDrive._buildCollections(),dateTag,compactDateTag,
-          message=>{if(button.isConnected)button.textContent=message;});
-        const blob=new Blob([result.bytes],{type:'application/zip'});
-        const url=URL.createObjectURL(blob),link=document.createElement('a');
-        link.href=url;link.download='vocab-backup_'+dateTag+'.zip';link.click();
-        setTimeout(()=>URL.revokeObjectURL(url),10000);
-        showToast('✓ 已匯出 '+result.count+' 個 CSV 檔案');
-      }catch(error){showToast(readableError(error),5000);}
-      finally{finish?.();if(button.isConnected){button.disabled=false;button.textContent='一鍵匯出全部資料';}}
+    document.getElementById('one-click-export-btn').addEventListener('click', async () => {
+      const words = DB.getWords(); const sentCsv = DB.exportSentencesCSV(); const statHistory = DB.getHistory(); const readingHistory = DB.getReadingQuizHistory();
+      if (!words.length && !sentCsv.includes('\n') && !statHistory.length && !readingHistory.length && !DB.getEssayHistory().length && !DB.getAiAskHistory().length && !studyDays.length) { showToast('尚無資料可匯出'); return; }
+      let finishExport;
+      try { finishExport=Tasks.start('local-export',{exclusive:true}); }
+      catch(error) { showToast(readableError(error));return; }
+      showToast('⏳ 正在打包...', 1800);
+      try {
+        const zip = new window.JSZip();
+        if (words.length)           zip.file(`vocab_${dateTag}.csv`,     '\uFEFF' + DB.exportCSV());
+        if (sentCsv.includes('\n')) zip.file(`sentences_${dateTag}.csv`, '\uFEFF' + sentCsv);
+        if (statHistory.length)     zip.file(`stats_${dateTag}.csv`,     '\uFEFF' + DB.exportStatsCSV());
+        if (readingHistory.length)  zip.file(`reading_${dateTag}.csv`,   '\uFEFF' + DB.exportReadingQuizCSV());
+        const essayHistory = DB.getEssayHistory();
+        if (essayHistory.length)    zip.file(`essay_${dateTag}.csv`,     '\uFEFF' + DB.exportEssayCSV());
+        const aiAskHistory = DB.getAiAskHistory();
+        if (aiAskHistory.length)    zip.file(`aiask_${dateTag}.csv`,     '\uFEFF' + DB.exportAiAskCSV());
+        if (studyDays.length)       zip.file(`study_days_${compactDateTag}.csv`, '\uFEFF' + DB.exportStudyDaysCSV());
+        const blob = await zip.generateAsync({ type: 'blob', compression: 'DEFLATE' });
+        const url = URL.createObjectURL(blob); const a = document.createElement('a');
+        a.href = url; a.download = `vocab-backup_${dateTag}.zip`; a.click(); URL.revokeObjectURL(url);
+        const count = [words.length, sentCsv.includes('\n'), statHistory.length, readingHistory.length, essayHistory.length, aiAskHistory.length, studyDays.length].filter(Boolean).length;
+        showToast(`✓ 已匯出 ${count} 個檔案（ZIP）`, 3000);
+      } catch(err) {
+        showToast('匯出失敗，請重試');
+      } finally { finishExport(); }
     });
-    const oneClickImportInput=document.getElementById('one-click-import-input');
-    document.getElementById('one-click-import-btn').addEventListener('click',()=>oneClickImportInput.click());
-    oneClickImportInput.addEventListener('change',async event=>{
-      const inputFiles=[...event.target.files];event.target.value='';if(!inputFiles.length)return;
-      const button=document.getElementById('one-click-import-btn');let finish;
-      try{
-        finish=Tasks.start('local-import',{exclusive:true});if(button)button.disabled=true;
-        await AppStorage.flush();const expectedRevision=AppStorage.getStatus().revision;
-        const files=[];
-        for(const file of inputFiles){
-          if(file.size>64*1024*1024)throw new Error('IMPORT_TOO_LARGE');
-          files.push({name:file.name,type:file.type,bytes:await file.arrayBuffer()});await yieldForUI();
+
+    // ── 一鍵匯入（自動識別類型）──
+    const oneClickImportInput = document.getElementById('one-click-import-input');
+    document.getElementById('one-click-import-btn').addEventListener('click', () => oneClickImportInput.click());
+    oneClickImportInput.addEventListener('change', async (e) => {
+      const files = [...e.target.files]; e.target.value = '';
+      if (!files.length) return;
+      let finishImport;
+      try { finishImport=Tasks.start('local-import',{exclusive:true}); }
+      catch(error) { showToast(readableError(error));return; }
+      try {
+
+      const results = []; const errors = []; const unknown = [];
+
+      // Helper: process a single CSV text entry
+      const processCSV = (name, text) => {
+        const type = DB.detectCSVType(text);
+        if (!type) { unknown.push(name); return; }
+        try {
+          if (type === 'vocab') {
+            const r = DB.importCSV(text);
+            results.push(`📚 單字庫（${name}）：新增 ${r.added} 個${r.skipped > 0 ? `，略過 ${r.skipped} 筆` : ''}`);
+          } else if (type === 'sentences') {
+            const r = DB.importSentencesCSV(text);
+            results.push(`💬 例句（${name}）：新增 ${r.added} 筆`);
+          } else if (type === 'stats') {
+            const r = DB.importStatsCSV(text);
+            results.push(`📊 統計（${name}）：新增 ${r.added} 筆，更新 ${r.updated} 筆`);
+          } else if (type === 'reading') {
+            const r = DB.importReadingQuizCSV(text);
+            results.push(`📖 文章閱讀測驗（${name}）：新增 ${r.added} 筆`);
+          } else if (type === 'essay') {
+            const r = DB.importEssayCSV(text);
+            results.push(`✍️ 文章記錄（${name}）：新增 ${r.added} 筆`);
+          } else if (type === 'aiask') {
+            const r = DB.importAiAskCSV(text);
+            results.push(`💬 AI 詢問（${name}）：新增 ${r.added} 筆`);
+          } else if (type === 'studyDays') {
+            const r = DB.importStudyDaysCSV(text);
+            results.push(`🔥 練習天數（${name}）：新增 ${r.added} 天，共 ${r.total} 天`);
+          }
+        } catch(err) {
+          errors.push(`${name}（${err.message||'格式錯誤'}）`);
         }
-        const result=await ZipClient.import(GDrive._buildCollections(),files,
-          message=>{if(button?.isConnected)button.textContent=message;});
-        if(result.errors.length){
-          Modal.show('<div class="modal-title">匯入驗證失敗</div><p>原始資料未變更。</p>'+result.errors.map(row=>'<p>'+escapeHTML(row.name)+'：'+escapeHTML(row.error)+'</p>').join(''));
-          return;
+      };
+
+      // Helper: read file as text
+      const readAsText = (file) => new Promise((resolve) => {
+        const reader = new FileReader();
+        reader.onload = (ev) => resolve(ev.target.result);
+        reader.readAsText(file, 'UTF-8');
+      });
+
+      // Helper: read file as ArrayBuffer (for ZIP)
+      const readAsBuffer = (file) => new Promise((resolve) => {
+        const reader = new FileReader();
+        reader.onload = (ev) => resolve(ev.target.result);
+        reader.readAsArrayBuffer(file);
+      });
+
+      showToast('⏳ 正在匯入...', 2000);
+
+      for (const file of files) {
+        const isZip = file.name.toLowerCase().endsWith('.zip') || file.type === 'application/zip';
+        if (isZip) {
+          // ── ZIP: extract all CSV files inside ──
+          try {
+            const buffer = await readAsBuffer(file);
+            const zip = await window.JSZip.loadAsync(buffer);
+            const csvFiles = Object.values(zip.files).filter(f => !f.dir && f.name.toLowerCase().endsWith('.csv'));
+            if (csvFiles.length === 0) { unknown.push(file.name + '（ZIP 內無 CSV）'); continue; }
+            for (const csvFile of csvFiles) {
+              const text = await csvFile.async('text');
+              // Strip BOM if present
+              const clean = text.replace(/^\uFEFF/, '');
+              processCSV(csvFile.name.split('/').pop(), clean);
+            }
+          } catch(err) {
+            errors.push(`${file.name}（ZIP 解析失敗）`);
+          }
+        } else {
+          // ── Single CSV file ──
+          const text = await readAsText(file);
+          processCSV(file.name, text.replace(/^\uFEFF/, ''));
         }
-        if(result.results.length){
-          if(button?.isConnected)button.textContent='正在建立復原點…';
-          await AppStorage.createRecoverySnapshot(await GDrive._buildRecoveryPayload(),'before-local-import');
-          await AppStorage.setItemsBatch(result.writes,{expectedRevision});
-          StudyStreak.markPending();await AppStorage.flush();refreshStudyStreakUI();GDrive.scheduleStudyStreakSync(500);
-        }
-        showToast(result.results.length?'✓ 已匯入 '+result.results.length+' 個 CSV'+(result.unknown.length?'，略過 '+result.unknown.length+' 個不支援的檔案':''):'沒有可匯入的 CSV',4000);
-        if(container.isConnected)this.render(container);
-      }catch(error){showToast('匯入未完成：'+readableError(error),5000);}
-      finally{finish?.();if(button?.isConnected){button.disabled=false;button.textContent='一鍵匯入（CSV / ZIP）';}}
+      }
+
+      if (results.length > 0) {
+        StudyStreak.migrateFromHistories(getStudyHistorySources(), { markPending: true });
+        await AppStorage.flush();
+        GDrive.scheduleStudyStreakSync(300);
+        refreshStudyStreakUI();
+      }
+
+      // Show result modal
+      const lines = [
+        ...results.map(r => `<div class="batch-result-ok">✓ ${r}</div>`),
+        ...unknown.map(n => `<div class="batch-result-warn">⚠ 無法識別：${n}</div>`),
+        ...errors.map(n => `<div class="batch-result-err">✗ 匯入失敗：${n}</div>`)
+      ].join('');
+
+      if (results.length === 0 && errors.length === 0 && unknown.length > 0) {
+        showToast('無法識別檔案格式，請確認 CSV 標頭');
+      } else {
+        Modal.show(`
+          <div class="modal-handle"></div>
+          <div class="modal-title">一鍵匯入結果</div>
+          <div class="batch-result-list">${lines || '<div style="color:var(--text-muted);font-size:13px">無資料被匯入</div>'}</div>
+          ${unknown.length > 0 ? `<div class="batch-unknown-hint">無法識別的檔案請確認 CSV 標頭格式是否正確</div>` : ''}
+          <div style="margin-top:16px"><button class="modal-btn-cancel" id="close-batch-modal" style="width:100%">完成</button></div>
+        `);
+        document.getElementById('close-batch-modal').addEventListener('click', () => {
+          Modal.hide(); this.render(container);
+        });
+      }
+      if (results.length > 0) this.render(container);
+      } catch(error) {
+        showToast('匯入未完成：'+readableError(error),5000);
+      } finally { finishImport(); }
     });
 
     // ── Google Drive 設定儲存 ──
-    document.getElementById('gd-save-cfg-btn')?.addEventListener('click', async () => {
+    document.getElementById('gd-save-cfg-btn')?.addEventListener('click', () => {
       const cid = document.getElementById('gd-client-id-input').value.trim();
       const fid = document.getElementById('gd-folder-id-input').value.trim();
-      if(fid&&!/^[A-Za-z0-9_-]{1,200}$/.test(fid)){showToast('請填入 Google Drive 資料夾 ID，不是完整網址',4000);return;}
-      const backendClient=CloudAuth.session()?.clientId;
-      if(CloudAuth.configured&&backendClient&&cid!==backendClient){showToast('自動續登入服務需沿用同一個 Google Client ID',4000);return;}
-      const oldClientId=DB.getGDriveClientId();
       DB.setGDriveClientId(cid);
       DB.setGDriveFolderId(fid);
       showToast('✓ Google Drive 設定已儲存');
       // If signed in with old token, sign out since client ID may have changed
-      if (cid!==oldClientId && GDrive.hasRememberedSession()) { await GDrive.signOut(); this.render(container); }
+      if (GDrive.hasRememberedSession()) { GDrive.signOut(); this.render(container); }
     });
 
     // ── Google 登入 ──
@@ -5217,7 +6387,6 @@ Views.settings = {
       btn.disabled = true; btn.textContent = '登入中…';
       try {
         await Tasks.run('google-signin', () => GDrive.signIn(), { exclusive: true });
-        if(CloudAuth.configured)return;
         showToast('✓ Google 登入完成；雲端同步將在背景執行', 3000);
         this.render(container);
 
@@ -5255,8 +6424,8 @@ Views.settings = {
     });
 
     // ── Google 登出 ──
-    document.getElementById('gd-signout-btn')?.addEventListener('click', async () => {
-      await GDrive.signOut();
+    document.getElementById('gd-signout-btn')?.addEventListener('click', () => {
+      GDrive.signOut();
       showToast('已登出 Google');
       this.render(container);
     });
@@ -5291,9 +6460,9 @@ Views.settings = {
           onProgress: message => { if (btn?.isConnected) btn.textContent = message; }
         }), { exclusive: true });
         if (!files.length) { showToast('雲端尚無備份，請先上傳', 3000); if (btn) btn.disabled=false; return; }
-        const renderRows = items => items.map((f, i) => {
+        const rows = files.map((f, i) => {
           const ts  = f.createdTime ? new Date(f.createdTime).toLocaleString('zh-TW') : '—';
-          const tag = f.id===files[0].id ? '<span style="font-size:10px;font-weight:800;color:var(--primary);background:color-mix(in srgb,var(--primary) 12%,transparent);padding:1px 6px;border-radius:10px;margin-left:6px">最新</span>' : '';
+          const tag = i === 0 ? '<span style="font-size:10px;font-weight:800;color:var(--primary);background:color-mix(in srgb,var(--primary) 12%,transparent);padding:1px 6px;border-radius:10px;margin-left:6px">最新</span>' : '';
           let meta = '';
           try {
             const sm = JSON.parse(f.description || '{}');
@@ -5305,31 +6474,19 @@ Views.settings = {
             if (sm.studyDays != null) parts.push('練習天數 ' + sm.studyDays + ' 天');
             meta = parts.join('・');
           } catch {}
-          return `<button class="fb-slot-btn" data-fid="${escapeAttr(f.id)}" style="width:100%;text-align:left;padding:10px 12px;border-radius:10px;border:1.5px solid var(--border);background:var(--bg);cursor:pointer;margin-bottom:6px">
+          return `<button class="fb-slot-btn" data-fid="${f.id}" style="width:100%;text-align:left;padding:10px 12px;border-radius:10px;border:1.5px solid var(--border);background:var(--bg);cursor:pointer;margin-bottom:6px">
             <div style="font-weight:700;font-size:13px;color:var(--text-primary)">${escapeHTML(ts)}${tag}</div>
             ${meta ? '<div style="font-size:12px;color:var(--primary);margin-top:2px">' + escapeHTML(meta) + '</div>' : ''}
           </button>`;
         }).join('');
-        const rows=renderRows(files);
         Modal.show(`<div class="modal-handle"></div>
           <div class="modal-title">選擇備份版本</div>
-          <p style="font-size:12px;color:var(--text-muted);margin-bottom:10px">由新到舊，每次讀取 20 份。</p>
+          <p style="font-size:12px;color:var(--text-muted);margin-bottom:10px">由新到舊，最多顯示 10 份。</p>
           <div id="gd-slot-list">${rows}</div>
-          <button class="btn-secondary" id="gd-list-more" ${GDrive._backupNextPage?'':'hidden'} style="width:100%;margin:8px 0">載入較早備份</button>
           <button class="modal-btn-cancel" id="gd-dl-cancel" style="width:100%;margin-top:4px">取消</button>`);
         document.getElementById('gd-dl-cancel').addEventListener('click', () => Modal.hide());
-        const more=document.getElementById('gd-list-more');
-        more.addEventListener('click',async()=>{
-          more.disabled=true;more.textContent='讀取中…';
-          try{
-            const next=await Tasks.run('drive-list',()=>GDrive.listBackups({pageToken:GDrive._backupNextPage,interactive:true}),{exclusive:true});
-            if(!more.isConnected)return;
-            document.getElementById('gd-slot-list').insertAdjacentHTML('beforeend',renderRows(next));more.hidden=!GDrive._backupNextPage;
-          }catch(error){showToast(readableError(error),4000);}
-          finally{if(more.isConnected){more.disabled=false;more.textContent='載入較早備份';}}
-        });
-        document.getElementById('gd-slot-list').addEventListener('click', async event=>{
-            const b=event.target.closest('.fb-slot-btn');if(!b||b.disabled)return;
+        document.querySelectorAll('.fb-slot-btn').forEach(b => {
+          b.addEventListener('click', async () => {
             const fileId = b.dataset.fid;
             const originalLabel = b.innerHTML;
             document.querySelectorAll('.fb-slot-btn').forEach(x => x.disabled = true);
@@ -5373,6 +6530,7 @@ Views.settings = {
               if (b.isConnected) b.innerHTML = originalLabel;
               showToast('下載失敗：' + readableError(err), 5000); Modal.hide();
             }
+          });
         });
       } catch(err) {
         showToast('讀取失敗：' + readableError(err), 5000);
@@ -5391,7 +6549,7 @@ Views.settings = {
       const snapshots = await AppStorage.listRecoverySnapshots();
       if (!snapshots.length) { showToast('目前尚無本機復原點'); return; }
       const rows = snapshots.map((item, index) => {
-        const counts = item.counts || {};
+        const counts = BackupSchema.counts(item.payload || {});
         const when = item.createdAt ? new Date(item.createdAt).toLocaleString('zh-TW') : '—';
         return `<button class="local-recovery-item" data-snapshot-id="${escapeAttr(item.id)}">
           <strong>${escapeHTML(when)}${index === 0 ? '（最新）' : ''}</strong>
@@ -5410,9 +6568,7 @@ Views.settings = {
           const originalLabel = button.innerHTML;
           document.querySelectorAll('.local-recovery-item').forEach(itemButton => itemButton.disabled = true);
           try {
-            const snapshot=await AppStorage.getRecoverySnapshot(item.id);
-            if(!snapshot)throw new Error('SNAPSHOT_UNAVAILABLE');
-            await Tasks.run('recovery-restore', () => GDrive.applyDownload(snapshot.payload, 'overwrite', {
+            await Tasks.run('recovery-restore', () => GDrive.applyDownload(item.payload, 'overwrite', {
               onProgress: message => { if (button.isConnected) button.textContent = message; }
             }), { exclusive: true });
             Modal.hide();
@@ -5462,7 +6618,7 @@ Views.settings = {
 // ===========================
 document.addEventListener('DOMContentLoaded', async () => {
   await AppStorage.init();
-  if(!AppStorage.getItem('studyStreakMigrationV8')) StudyStreak.migrateFromHistories(getStudyHistorySources(), { markPending: true });
+  StudyStreak.migrateFromHistories(getStudyHistorySources(), { markPending: true });
   void AppUpdater.register();
 
   const storageBanner = document.getElementById('storage-banner');
@@ -5495,24 +6651,6 @@ document.addEventListener('DOMContentLoaded', async () => {
     GDrive.scheduleStudyStreakSync(150);
   });
   window.addEventListener('offline', updateNetworkState);
-  const updateCloudState=()=>{
-    const state=CloudAuth.status(),badge=document.getElementById('home-cloud-state');
-    const connected=GDrive.isSignedIn();
-    const text=!navigator.onLine?'離線模式':connected?'Google 已連線':state.state==='restoring'?'恢復連線中…':state.state==='unavailable'?'雲端暫時無法連線':GDrive.hasRememberedSession()?'需要連結 Google':'本機模式';
-    if(badge){badge.textContent=text;badge.classList.toggle('is-connected',connected);}
-    const status=document.getElementById('cloud-service-status');
-    if(status){
-      status.textContent=state.lastError?readableError(new Error(state.lastError)):state.configured?(connected?'已連線，Google 授權由後端自動續期。':text+'；首次使用請按「連結 Google」。'):'設定授權 Worker 後可在重新開啟時自動恢復連線。';
-    }
-    const signin=document.getElementById('gd-signin-btn');if(signin&&state.configured){signin.hidden=connected;signin.textContent='連結 Google';}
-    if(state.email){const row=document.querySelector('.fb-status-text');if(row)row.textContent=(connected?'已連線：':'已記住：')+state.email;}
-  };
-  window.addEventListener('vocabulary-cloud-state',updateCloudState);
-  window.addEventListener('online',()=>{void CloudAuth.finishPending().then(()=>CloudAuth.restore()).catch(()=>{});});
-  document.addEventListener('visibilitychange',()=>{
-    if(!document.hidden){void CloudAuth.finishPending().then(()=>CloudAuth.restore()).catch(()=>{});GDrive.scheduleStudyStreakSync(1200);}
-  });
-
   updateNetworkState();
 
   document.querySelectorAll('.nav-btn').forEach(btn => {
@@ -5565,20 +6703,65 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   Router._doNavigate('home');
 
+  // Warm the Google Identity script after the UI is already usable. The script
+  // also starts loading asynchronously from index.html, so this call doubles as
+  // a readiness gate before we arm the first-gesture no-UI reconnect.
+  setTimeout(() => {
+    void GDrive.preloadGIS().then(ready => {
+      if (ready) armSeamlessGoogleReconnect();
+    });
+  }, 0);
+
+  // V7.4.2 seamless reconnect:
+  // - The home screen is already usable before any Google work starts.
+  // - Never open an account chooser/consent dialog just because the PWA launched.
+  // - If a Google account was previously remembered, use the user's first normal
+  //   tap/click as the required browser gesture and attempt prompt:'none'.
+  // - Failure is intentionally silent; a later Drive button reuses that button
+  //   click for the normal Google token flow, so there is no separate login step.
+  const armSeamlessGoogleReconnect = () => {
+    if (!navigator.onLine || !DB.getGDriveClientId() || !GDrive.hasRememberedSession()) return;
+    if (GDrive.isSignedIn() || GDrive.tryRestoreFromStorage()) return;
+
+    let attempted = false;
+    const attempt = (event) => {
+      if (attempted) return;
+
+      // A Drive/login button already provides its own explicit OAuth gesture.
+      // Do not start a prompt:'none' request in capture phase and race it.
+      const target = event?.target;
+      if (target instanceof Element && target.closest('#gd-upload-btn,#gd-download-btn,#gd-streak-sync-btn,#gd-signin-btn')) return;
+
+      attempted = true;
+      document.removeEventListener('pointerdown', attempt, true);
+      document.removeEventListener('keydown', attempt, true);
+      void GDrive.tryRestoreToken({ noUi: true }).then(restored => {
+        if (!restored) return;
+        GDrive.scheduleStudyStreakSync(500);
+        if (DB.getGDriveAutoSync()) {
+          setTimeout(() => { void bootstrapGDriveInBackground(); }, 0);
+        }
+        if (Router.currentView === 'settings') Router._doNavigate('settings');
+      }).catch(() => {});
+    };
+
+    document.addEventListener('pointerdown', attempt, { capture: true, passive: true });
+    document.addEventListener('keydown', attempt, { capture: true });
+  };
+
   const bootstrapGDriveInBackground = async () => {
-    if (!navigator.onLine) return;
+    if (!navigator.onLine || !DB.getGDriveClientId()) return;
     try {
-      await CloudAuth.init();
-      // V7.5.0: page startup must never launch Google OAuth UI. Only reuse an
-      // legacy session token, or silently restore the configured backend session.
-      // Ordinary taps never start a Google authorization flow.
+      // V7.4.2: page startup must never launch Google OAuth UI. Only reuse an
+      // access token that is already valid in this PWA session. If the app was
+      // fully closed, a no-UI reconnect is armed on the user's first normal tap.
       const restored = GDrive.isSignedIn() || GDrive.tryRestoreFromStorage();
       if (!restored) return;
 
       if (DB.getGDriveAutoSync()) {
         showToast('☁️ 背景檢查雲端備份中…', 1800);
         try {
-          const syncResult = await Tasks.run('auto-cloud-sync', () => GDrive.autoRestoreIfCloudHasMore(), { background: true });
+          const syncResult = await Tasks.run('auto-cloud-sync', () => GDrive.autoRestoreIfCloudHasMore(), { exclusive: true });
           if (syncResult.status === 'restored') {
             showToast('✓ 已自動同步雲端最新備份', 2800);
             if (!Router.quizActive && !Router.essayActive && ['home', 'settings'].includes(Router.currentView)) {

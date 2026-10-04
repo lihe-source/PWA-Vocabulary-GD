@@ -1,4 +1,4 @@
-# GitHub Pages＋每日推播提醒設定指南（V7.5.0）
+# GitHub Pages＋每日推播提醒設定指南（V7.4.2）
 
 本版本使用兩個部署位置：
 
@@ -14,7 +14,7 @@ GitHub Pages 是靜態網站，無法在 PWA 關閉後執行計時器，因此�
 1. GitHub 帳號。
 2. Cloudflare 帳號。
 3. Windows 11 電腦。
-4. Node.js 24 或更新版本。
+4. Node.js 20 或更新版本。
 
 請勿把下列資料寫入 GitHub 檔案：
 
@@ -141,7 +141,7 @@ export const PUSH_CONFIG = Object.freeze({
 開啟 Worker 網址，應看到：
 
 ```json
-{"ok":true,"service":"Vocabulary Daily Reminder","version":"V7.5.0","configured":true}
+{"ok":true,"service":"Vocabulary Daily Reminder","version":"V7.4.2","configured":true}
 ```
 
 若 `configured` 是 `false`，代表 D1、VAPID Secrets 或 `APP_URL` 尚未完成。

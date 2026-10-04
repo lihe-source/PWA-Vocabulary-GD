@@ -1,4 +1,3 @@
-import {BackupSchema} from './backup-schema.js?v=V7_5_0';
 const DB_NAME = 'pwa_vocabulary_v7';
 const DB_VERSION = 1;
 const KV_STORE = 'kv';
@@ -16,18 +15,12 @@ const INDEXED_KEYS = new Set([
   'boostedWords',
   'todaySentence',
   'geminiApiKey',
-  'vocabularyDrafts',
-  'googleCloudSession',
-  'googleCloudAuthPending',
-  'cloudComparisonCache'
+  'vocabularyDrafts'
 ]);
 
 const EMPTY_INDEXED_VALUES = {
   geminiApiKey: '',
   vocabularyDrafts: '{}',
-  googleCloudSession: 'null',
-  googleCloudAuthPending: 'null',
-  cloudComparisonCache: 'null',
   todaySentence: 'null'
 };
 
@@ -42,7 +35,6 @@ export class StorageBridge {
     this.fallback = false;
     this.revision = 0;
     this.diskRevision = '';
-    this.contentVersion = '';
     this.errors = new Map();
     this.tail = Promise.resolve();
     this.batchActive = false;
@@ -72,7 +64,6 @@ export class StorageBridge {
       const records = await this._getAllRecords();
       const recordMap = new Map(records.map(record => [record.key, record]));
       this.diskRevision = recordMap.get('_revision')?.value || '';
-      this.contentVersion = recordMap.get('_content_revision')?.value || this.diskRevision;
       const migrations = [];
 
       for (const key of INDEXED_KEYS) {
@@ -194,7 +185,7 @@ export class StorageBridge {
       tx.objectStore(KV_STORE).clear();tx.objectStore(SNAPSHOT_STORE).clear();
       tx.oncomplete=resolve;tx.onerror=tx.onabort=()=>reject(tx.error);
     });
-    this.cache.clear();this.committed.clear();this.keyVersions.clear();localStorage.clear();this.diskRevision='';this.contentVersion='';this._snapshotMetaReady=false;this.revision++;
+    this.cache.clear();this.committed.clear();this.keyVersions.clear();localStorage.clear();this.diskRevision='';this.revision++;
     this.channel?.postMessage('changed');
   }
 
@@ -218,9 +209,7 @@ export class StorageBridge {
     if(revision===this.diskRevision) return false;
     for(const key of INDEXED_KEYS) { this.cache.delete(key);this.committed.delete(key); }
     for(const record of records) if(INDEXED_KEYS.has(record.key)) {this.cache.set(record.key,record.value);this.committed.set(record.key,record.value);}
-    this.diskRevision=revision;
-    this.contentVersion=records.find(x=>x.key==='_content_revision')?.value||revision;
-    this.revision++;this._emit();return true;
+    this.diskRevision=revision;this.revision++;this._emit();return true;
   }
 
   async setItemsBatch(entries, {expectedRevision} = {}) {
@@ -253,13 +242,9 @@ export class StorageBridge {
       createdAt: new Date().toISOString(),
       payload
     };
-    await this._ensureSnapshotMetadata();
     await new Promise((resolve, reject) => {
-      const tx = this.db.transaction([SNAPSHOT_STORE,KV_STORE], 'readwrite');
+      const tx = this.db.transaction(SNAPSHOT_STORE, 'readwrite');
       tx.objectStore(SNAPSHOT_STORE).put(record);
-      tx.objectStore(KV_STORE).put({key:'_snapshot_meta:'+id,value:{
-        id,reason,createdAt:record.createdAt,counts:payload.collectionCounts||BackupSchema.counts(payload)
-      }});
       tx.oncomplete = resolve;
       tx.onerror = () => reject(tx.error);
       tx.onabort = () => reject(tx.error);
@@ -270,43 +255,12 @@ export class StorageBridge {
 
   async listRecoverySnapshots() {
     if (!this.db || this.fallback) return [];
-    await this._ensureSnapshotMetadata();
-    return new Promise((resolve,reject) => {
-      const tx = this.db.transaction(KV_STORE, 'readonly');
-      const req = tx.objectStore(KV_STORE).getAll(IDBKeyRange.bound('_snapshot_meta:','_snapshot_meta:\uffff'));
-      req.onsuccess = () => resolve((req.result || []).map(record=>record.value).sort((a,b)=>b.createdAt.localeCompare(a.createdAt)));
-      req.onerror = () => reject(req.error);
+    return new Promise(resolve => {
+      const tx = this.db.transaction(SNAPSHOT_STORE, 'readonly');
+      const req = tx.objectStore(SNAPSHOT_STORE).getAll();
+      req.onsuccess = () => resolve((req.result || []).sort((a, b) => b.createdAt.localeCompare(a.createdAt)));
+      req.onerror = () => resolve([]);
     });
-  }
-  async getRecoverySnapshot(id) {
-    if(!this.db||this.fallback)throw new Error('SNAPSHOT_UNAVAILABLE');
-    return new Promise((resolve,reject)=>{
-      const tx=this.db.transaction(SNAPSHOT_STORE,'readonly');
-      const req=tx.objectStore(SNAPSHOT_STORE).get(id);
-      req.onsuccess=()=>resolve(req.result||null);req.onerror=()=>reject(req.error);
-    });
-  }
-  async _ensureSnapshotMetadata() {
-    if(this._snapshotMetaReady)return;
-    if(this._snapshotMetaJob)return this._snapshotMetaJob;
-    this._snapshotMetaJob=(async()=>{
-      if((await this._getRecord('_snapshot_meta_ready'))?.value==='1'){this._snapshotMetaReady=true;return;}
-      await new Promise((resolve,reject)=>{
-        const tx=this.db.transaction([SNAPSHOT_STORE,KV_STORE],'readwrite'),store=tx.objectStore(KV_STORE);
-        const req=tx.objectStore(SNAPSHOT_STORE).openCursor();
-        req.onsuccess=()=>{
-          const cursor=req.result;
-          if(!cursor){store.put({key:'_snapshot_meta_ready',value:'1'});return;}
-          const record=cursor.value;
-          store.put({key:'_snapshot_meta:'+record.id,value:{id:record.id,reason:record.reason,
-            createdAt:record.createdAt,counts:record.payload?.collectionCounts||BackupSchema.counts(record.payload||{})}});
-          cursor.continue();
-        };
-        tx.oncomplete=()=>{this._snapshotMetaReady=true;resolve();};
-        tx.onerror=tx.onabort=()=>reject(tx.error);
-      });
-    })();
-    try{await this._snapshotMetaJob;}finally{this._snapshotMetaJob=null;}
   }
 
   _queue(promise) {
@@ -352,17 +306,14 @@ export class StorageBridge {
       const store = tx.objectStore(KV_STORE);
       const updatedAt = new Date().toISOString();
       const revision = crypto.randomUUID?.() || `${Date.now()}-${Math.random()}`;
-      const contentKeys=new Set([...INDEXED_KEYS].filter(key=>!['vocabularyDrafts','geminiApiKey','googleCloudSession','googleCloudAuthPending','cloudComparisonCache'].includes(key)));
-      const contentVersion=entries.some(([key])=>contentKeys.has(key))?revision:this.contentVersion;
       let conflict=false;
       const req=store.get('_revision');
       req.onsuccess=()=>{
         if ((req.result?.value || '') !== this.diskRevision) { conflict=true;tx.abort();return; }
         for (const [key, value] of entries) store.put({ key, value, updatedAt });
         store.put({key:'_revision',value:revision,updatedAt});
-        if(contentVersion)store.put({key:'_content_revision',value:contentVersion,updatedAt});
       };
-      tx.oncomplete = () => {this.diskRevision=revision;this.contentVersion=contentVersion;this.channel?.postMessage('changed');resolve();};
+      tx.oncomplete = () => {this.diskRevision=revision;this.channel?.postMessage('changed');resolve();};
       tx.onerror = tx.onabort = () => reject(conflict ? new Error('STORAGE_CONFLICT') : tx.error || new Error('STORAGE_WRITE_FAILED'));
     });
   }
@@ -392,9 +343,9 @@ export class StorageBridge {
     const extras = snapshots.slice(limit);
     if (!extras.length) return;
     await new Promise((resolve, reject) => {
-      const tx = this.db.transaction([SNAPSHOT_STORE,KV_STORE], 'readwrite');
+      const tx = this.db.transaction(SNAPSHOT_STORE, 'readwrite');
       const store = tx.objectStore(SNAPSHOT_STORE);
-      extras.forEach(item => {store.delete(item.id);tx.objectStore(KV_STORE).delete('_snapshot_meta:'+item.id);});
+      extras.forEach(item => store.delete(item.id));
       tx.oncomplete = resolve;
       tx.onerror = () => reject(tx.error);
     });

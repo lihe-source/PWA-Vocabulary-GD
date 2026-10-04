@@ -39,7 +39,7 @@ test('exclusive tasks block different restore and sync labels', () => {
 
 test('update activation stops when storage flush fails', async () => {
   let posted=false;
-  const manager=new VersionManager({currentVersion:'V7_5_0',displayVersion:'V7.5.0',storage:{flush:async()=>{throw new Error('write failed');}},canActivate:()=>true});
+  const manager=new VersionManager({currentVersion:'V7_4_2',displayVersion:'V7.4.2',storage:{flush:async()=>{throw new Error('write failed');}},canActivate:()=>true});
   const activated=await manager.activateWaitingIfSafe({postMessage:()=>{posted=true;}});
   assert.equal(activated,false);assert.equal(posted,false);
 });
@@ -47,8 +47,7 @@ test('update activation stops when storage flush fails', async () => {
 test('word list uses escaped fields and bounded batches', async () => {
   const app=await readFile(new URL('./app.js',import.meta.url),'utf8');
   assert.match(app,/pageSize:\s*80/);
-  assert.ok(app.includes('words.slice(this.pageIndex*this.pageSize,(this.pageIndex+1)*this.pageSize)'));
-  assert.doesNotMatch(app,/visibleCount/);
+  assert.match(app,/allWords\.slice\(0,this\.visibleCount\)/);
   assert.match(app,/escapeHTML\(w\.english\)/);
   assert.match(app,/escapeAttr\(w\.id\)/);
 });
