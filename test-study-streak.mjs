@@ -83,7 +83,7 @@ test('legacy histories migrate all four qualifying activity types', () => {
     readingQuizHistory: [{ date: '2026/08/02', sessions: [{ id: 'r1' }] }],
     essayHistory: [{ date: '2026/08/03', sessions: [{ ts: 3 }] }],
     aiAskHistory: [{ id: 'a1', ts: Date.parse('2026-08-04T05:00:00.000Z') }]
-  });
+  },{timeZone:'Asia/Taipei'});
   assert.equal(migrated.length, 4);
   assert.deepEqual(migrated.flatMap(day => day.activities).sort(), ['ai_ask', 'essay_review', 'reading_quiz', 'word_quiz']);
 });

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 
 const app = await readFile(new URL('./app.js', import.meta.url), 'utf8');
-const style = await readFile(new URL('./style.css', import.meta.url), 'utf8');
+const style=(await Promise.all(['style.css','ui.css'].map(file=>readFile(new URL('./'+file,import.meta.url),'utf8')))).join('\n');
 
 test('home practice cards separate title and subtitle content', () => {
   assert.equal((app.match(/class="menu-card-copy"/g) || []).length, 4);

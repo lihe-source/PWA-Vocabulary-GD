@@ -1,18 +1,26 @@
-import {request} from './network.js?v=V7_5_0';
-export function createGeminiService(DB,policy,catalog){
-const Gemini = {
+import {fetchJSON} from './request-coordinator.js?v=V7_4_3';
+export function createGeminiService({DB,escapeRegex,requests}) {
+const service = {
   // All selectable models (display name -> API id)
-  AVAILABLE_MODELS: catalog,
-  _policy: policy,
-  async _fetch(url,options={}) {return fetch(url,{...options,signal:policy.signal});},
+  AVAILABLE_MODELS: [
+    { label: 'Gemini 3.5 Flash',      id: 'gemini-3.5-flash',      tag: '推薦・穩定', tier: 'stable' },
+    { label: 'Gemini 3.1 Flash-Lite', id: 'gemini-3.1-flash-lite', tag: '快速・穩定', tier: 'stable' },
+    { label: 'Gemini 2.5 Flash',      id: 'gemini-2.5-flash',      tag: '備援・穩定', tier: 'stable' },
+    { label: 'Gemini 2.5 Flash-Lite', id: 'gemini-2.5-flash-lite', tag: '省配額・穩定', tier: 'stable' },
+    { label: 'Gemini 2.5 Pro',        id: 'gemini-2.5-pro',        tag: '高階・穩定', tier: 'stable' },
+    { label: 'Gemini 3.1 Pro Preview', id: 'gemini-3.1-pro-preview', tag: '預覽', tier: 'preview' },
+    { label: 'Gemini 3 Flash Preview', id: 'gemini-3-flash-preview', tag: '預覽', tier: 'preview' },
+  ],
 
   // Production fallback stays on stable endpoints. Preview models are tried only when explicitly selected.
   _getModelList() {
-    const selected=DB.getModel();
-    const available=this.AVAILABLE_MODELS;
-    const stable=available.filter(model=>model.tier!=='preview').map(model=>model.id);
-    const primary=available.some(model=>model.id===selected)?selected:(stable[0]||selected);
-    return [...new Set([primary,...stable])].filter(Boolean).slice(0,2);
+    const selected = DB.getModel();
+    const selectedMeta = this.AVAILABLE_MODELS.find(m => m.id === selected);
+    const stableIds = this.AVAILABLE_MODELS.filter(m => m.tier === 'stable').map(m => m.id);
+    const previewIds = selectedMeta?.tier === 'preview'
+      ? this.AVAILABLE_MODELS.filter(m => m.tier === 'preview').map(m => m.id)
+      : [];
+    return [...new Set([selected, ...stableIds, ...previewIds])].filter(Boolean);
   },
 
   // Extract the actual response text, skipping "thought" parts from thinking models
@@ -58,35 +66,27 @@ const Gemini = {
     return null;
   },
 
-  async _callModel(model,body,apiKey,attempt=0) {
-    if(policy.signal?.aborted)throw new Error('REQUEST_CANCELLED');
-    const remaining=Math.max(1,policy.deadline-Date.now());
-    try {
-      const result=await request('https://generativelanguage.googleapis.com/v1beta/models/'+model+':generateContent?key='+encodeURIComponent(apiKey),
-        {method:'POST',headers:{'Content-Type':'application/json'},body,signal:policy.signal},
-        {timeout:Math.min(30000,remaining),retries:0});
-      return this._extractText(result.data);
-    }catch(error){
-      if(policy.signal?.aborted||error.message==='REQUEST_CANCELLED')throw new Error('REQUEST_CANCELLED');
-      if(error.message==='REQUEST_TIMEOUT')throw new Error('API_TIMEOUT');
-      if(!error.status)throw new Error('NETWORK_ERROR');
-      if(attempt<1&&[429,503].includes(error.status)&&policy.deadline-Date.now()>2000){
-        await new Promise(resolve=>setTimeout(resolve,900));return this._callModel(model,body,apiKey,attempt+1);
+  async _callModel(model, body, apiKey, attempt = 0) {
+    const {response:res,data} = await fetchJSON(
+      `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
+      {method:'POST',headers:{'Content-Type':'application/json'},body,signal:this._signal},
+      Math.min(30000,Math.max(1,(this._deadline || Date.now()+30000)-Date.now()))
+    );
+    if (!res.ok) {
+      let errMsg = `HTTP ${res.status}`;
+      errMsg = data.error?.message || errMsg;
+      const lower = String(errMsg).toLowerCase();
+      const err = new Error(errMsg);
+      const apiKeyProblem = lower.includes('api key') || lower.includes('apikey') || lower.includes('permission denied') || lower.includes('authentication');
+      const modelProblem = lower.includes('model') || lower.includes('not found') || lower.includes('not supported') || lower.includes('deprecated') || lower.includes('quota') || lower.includes('rate limit') || lower.includes('unavailable');
+      if (!apiKeyProblem && attempt < 1 && (res.status === 429 || res.status === 503)) {
+        await new Promise(resolve => setTimeout(resolve, 900));
+        return this._callModel(model, body, apiKey, attempt + 1);
       }
-      error.fallback=[404,429,503].includes(error.status);
-      throw error;
+      err.fallback = !apiKeyProblem && (res.status === 404 || res.status === 429 || res.status === 503 || (res.status === 400 && modelProblem));
+      throw err;
     }
-  },
-  async answerQuestion(q){
-    const apiKey=DB.getApiKey();if(!apiKey)throw new Error('NO_API_KEY');
-    const prompt='You are an English tutor. Answer clearly and helpfully in Traditional Chinese unless asked in English. Correct sentences with explanations. Be concise.\n\nUser question: '+q;
-    const body=JSON.stringify({contents:[{parts:[{text:prompt}]}],generationConfig:{temperature:0.5,maxOutputTokens:8192}});
-    let lastError;
-    for(const model of this._getModelList()){
-      try{const answer=await this._callModel(model,body,apiKey);if(answer.trim())return answer.replace(/<thinking>[\s\S]*?<\/thinking>/gi,'').trim();}
-      catch(error){if(!error.fallback)throw error;lastError=error;}
-    }
-    throw lastError||new Error('EMPTY_RESPONSE');
+    return this._extractText(data);
   },
 
   async reviewEssay(essay, words) {
@@ -142,6 +142,7 @@ Rules:
         if (parsed && typeof parsed.score !== 'undefined') return parsed;
         lastErr = new Error('PARSE_ERROR: missing score field');
       } catch(err) {
+        if(this._signal?.aborted)throw new Error('REQUEST_CANCELLED');
         if (err.message === 'NETWORK_ERROR') throw err;
         if (err.fallback) { lastErr = err; continue; }
         if (err instanceof SyntaxError) { lastErr = new Error(`PARSE_ERROR: ${err.message}`); continue; }
@@ -194,6 +195,7 @@ Rules:
         }
         lastErr = new Error('PARSE_ERROR: missing score');
       } catch(err) {
+        if(this._signal?.aborted)throw new Error('REQUEST_CANCELLED');
         if (err.message === 'NETWORK_ERROR') throw err;
         if (err.fallback) { lastErr = err; continue; }
         if (err instanceof SyntaxError) { lastErr = new Error('PARSE_ERROR: ' + err.message); continue; }
@@ -227,6 +229,7 @@ ZH: [繁體中文 translation]`;
         lastErr = new Error('PARSE_ERROR');
         // Parse failed — try next model
       } catch (err) {
+        if(this._signal?.aborted)throw new Error('REQUEST_CANCELLED');
         if (err.message === 'NETWORK_ERROR') throw err;
         if (err.fallback) { lastErr = err; continue; }
         throw err;
@@ -278,6 +281,7 @@ Requirements:
         if (zh) return zh;
         lastErr = new Error('PARSE_ERROR');
       } catch (err) {
+        if(this._signal?.aborted)throw new Error('REQUEST_CANCELLED');
         if (err.message === 'NETWORK_ERROR') throw err;
         if (err.fallback) { lastErr = err; continue; }
         throw err;
@@ -379,6 +383,7 @@ Rules:
         if (questions.every(q => q.correctSynonym && q.options.length === 3)) return { article, questions };
         lastErr = new Error('PARSE_ERROR: invalid questions');
       } catch(err) {
+        if(this._signal?.aborted)throw new Error('REQUEST_CANCELLED');
         if (err.message === 'NETWORK_ERROR') throw err;
         if (err.fallback) { lastErr = err; continue; }
         if (err instanceof SyntaxError) { lastErr = new Error('PARSE_ERROR: ' + err.message); continue; }
@@ -414,13 +419,13 @@ Rules:
     ];
     for (const url of endpoints) {
       try {
-        const res = await this._fetch(url, { method: 'GET' });
+        const {response:res,data}=await fetchJSON(url,{signal:this._signal},Math.min(12000,Math.max(1,this._deadline-Date.now())));
         if (!res.ok) continue;
-        const data = await res.json();
         const translated = data?.responseData?.translatedText || data?.matches?.find(m => m?.translation)?.translation || '';
         const cleaned = String(translated).replace(/&quot;/g, '"').replace(/&#39;/g, "'").trim();
         if (cleaned && cleaned.toLowerCase() !== q.toLowerCase()) return cleaned;
-      } catch {}
+      } catch(error) {
+        if(this._signal?.aborted)throw new Error('REQUEST_CANCELLED');if(this._signal?.aborted)throw new Error('REQUEST_CANCELLED');}
     }
     return '';
   },
@@ -430,9 +435,10 @@ Rules:
     if (!cleanWord) return [];
     let dict = null;
     try {
-      const res = await this._fetch(`https://api.dictionaryapi.dev/api/v2/entries/en/${encodeURIComponent(cleanWord)}`);
-      if (res.ok) dict = await res.json();
-    } catch {}
+      const {response:res,data}=await fetchJSON(`https://api.dictionaryapi.dev/api/v2/entries/en/${encodeURIComponent(cleanWord)}`,{signal:this._signal},Math.min(12000,Math.max(1,this._deadline-Date.now())));
+      if (res.ok) dict = data;
+    } catch(error) {
+        if(this._signal?.aborted)throw new Error('REQUEST_CANCELLED');if(this._signal?.aborted)throw new Error('REQUEST_CANCELLED');}
 
     const entries = [];
     const first = Array.isArray(dict) ? dict[0] : null;
@@ -511,6 +517,7 @@ If the word does not exist or is invalid, return: []`;
         }
         lastErr = new Error('NOT_ARRAY');
       } catch(err) {
+        if(this._signal?.aborted)throw new Error('REQUEST_CANCELLED');
         if (err.message === 'NETWORK_ERROR') throw err;
         if (err.fallback) { lastErr = err; continue; }
         lastErr = err;
@@ -530,5 +537,13 @@ If the word does not exist or is invalid, return: []`;
     throw lastErr || new Error('API_ERROR');
   }
 };
-return Gemini;
+  const methods=Object.keys(service).filter(key=>typeof service[key]==='function' && service[key].constructor.name==='AsyncFunction' && (!key.startsWith('_')||key==='_callModel'));
+  for(const name of methods){const original=service[name];service[name]=function(...args){
+    if(this!==service)return original.apply(this,args);
+    return requests.run(name+':'+JSON.stringify(args),signal=>{
+      const context=Object.create(service);context._signal=signal;context._deadline=Date.now()+90000;
+      return original.apply(context,args);
+    });
+  };}
+  return service;
 }

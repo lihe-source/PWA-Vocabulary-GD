@@ -2,25 +2,25 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 
-const text = name => readFile(new URL(`./${name}`, import.meta.url), 'utf8');
+const text = async name => {const source=await readFile(new URL(`./${name}`,import.meta.url),'utf8');return name==='app.js'?source+'\n'+(await Promise.all(['data-store.js','drive-service.js','backup-worker.js'].map(file=>readFile(new URL('./'+file,import.meta.url),'utf8')))).join('\n'):source;};
 
-test('all public app surfaces use the V7.4.2 cache/version', async () => {
+test('all public app surfaces use the V7.4.3 cache/version', async () => {
   const [app, html, sw, version, manifest] = await Promise.all([
     text('app.js'), text('index.html'), text('sw.js'), text('version.json'), text('manifest.json')
   ]);
-  assert.match(app, /APP_VERSION = 'V7_4_2'/);
-  assert.match(html, /app\.js\?v=V7_4_2/);
-  assert.match(sw, /Voc-PWA-V7_4_2/);
-  assert.match(sw, /study-streak\.js\?v=V7_4_2/);
-  assert.match(sw, /backup-worker\.js\?v=V7_4_2/);
-  assert.match(sw, /task-manager\.js\?v=V7_4_2/);
+  assert.match(app, /APP_VERSION = 'V7_4_3'/);
+  assert.match(html, /app\.js\?v=V7_4_3/);
+  assert.match(sw, /Voc-PWA-V7_4_3/);
+  assert.match(sw, /study-streak\.js\?v=V7_4_3/);
+  assert.match(sw, /backup-worker\.js\?v=V7_4_3/);
+  assert.match(sw, /task-manager\.js\?v=V7_4_3/);
   assert.equal(JSON.parse(version).schemaVersion, 8);
-  assert.match(JSON.parse(manifest).name, /V7\.4\.2/);
+  assert.match(JSON.parse(manifest).name, /V7\.4\.3/);
 });
 
 test('study streak UI uses the green theme and a stable mobile settings layout', async () => {
   const [app, style] = await Promise.all([text('app.js'), text('style.css')]);
-  const streakSection = style.split('/* ===== V7.4.2 Study streak')[1]
+  const streakSection = style.split('/* ===== V7.4.3 Study streak')[1]
     ?.split('/* ===== V7.1.0')[0] || '';
 
   assert.match(streakSection, /margin:\s*12px/);
@@ -44,7 +44,7 @@ test('all four completed practice paths record a qualifying activity', async () 
 test('settings backup and Google Drive payload include study days', async () => {
   const app = await text('app.js');
   assert.match(app, /studyDays: StudyStreak\.getDays\(\)/);
-  assert.match(app, /study_days_\$\{compactDateTag\}\.csv/);
+  assert.match(app, /study_days_\$\{payload.compactDateTag\}\.csv/);
   assert.match(app, /vocab_study_streak\.json/);
   assert.match(app, /gd-streak-sync-btn/);
 });

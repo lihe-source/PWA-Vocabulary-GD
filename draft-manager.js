@@ -1,5 +1,5 @@
 export class DraftManager {
-  constructor({storage, delay=350, setTimer=setTimeout, clearTimer=clearTimeout}) {
+  constructor({storage, delay=350, setTimer=(fn,ms)=>globalThis.setTimeout(fn,ms), clearTimer=id=>globalThis.clearTimeout(id)}) {
     this.storage=storage;this.delay=delay;this.setTimer=setTimer;this.clearTimer=clearTimer;
     this.timers=new Map();this.pending=new Map();
   }

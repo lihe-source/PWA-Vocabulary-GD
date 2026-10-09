@@ -1,24 +1,31 @@
 const CACHE_PREFIX = 'Voc-PWA-';
-const CACHE_NAME = 'Voc-PWA-V7_4_2';
+const CACHE_NAME = 'Voc-PWA-V7_4_3';
 const APP_SHELL = [
   './',
   './index.html',
-  './style.css?v=V7_4_2',
-  './app.js?v=V7_4_2',
-  './manifest.json?v=V7_4_2',
+  './style.css?v=V7_4_3',
+  './app.js?v=V7_4_3',
+  './ui.css?v=V7_4_3',
+  './data-store.js?v=V7_4_3',
+  './gemini-service.js?v=V7_4_3',
+  './drive-service.js?v=V7_4_3',
+  './request-coordinator.js?v=V7_4_3',
+  './data-merge.js?v=V7_4_3',
+  './ui-controller.js?v=V7_4_3',
+  './manifest.json?v=V7_4_3',
   './version.json',
-  './storage.js?v=V7_4_2',
-  './backup-schema.js?v=V7_4_2',
-  './study-streak.js?v=V7_4_2',
-  './version-manager.js?v=V7_4_2',
-  './chart-renderer.js?v=V7_4_2',
-  './push-config.js?v=V7_4_2',
-  './reminder-manager.js?v=V7_4_2',
-  './task-manager.js?v=V7_4_2',
-  './network.js?v=V7_4_2',
-  './backup-worker-client.js?v=V7_4_2',
-  './backup-worker.js?v=V7_4_2',
-  './draft-manager.js?v=V7_4_2',
+  './storage.js?v=V7_4_3',
+  './backup-schema.js?v=V7_4_3',
+  './study-streak.js?v=V7_4_3',
+  './version-manager.js?v=V7_4_3',
+  './chart-renderer.js?v=V7_4_3',
+  './push-config.js?v=V7_4_3',
+  './reminder-manager.js?v=V7_4_3',
+  './task-manager.js?v=V7_4_3',
+  './network.js?v=V7_4_3',
+  './backup-worker-client.js?v=V7_4_3',
+  './backup-worker.js?v=V7_4_3',
+  './draft-manager.js?v=V7_4_3',
   './jszip.min.js?v=3_10_1',
   './icon-192.png',
   './icon-512.png'
@@ -52,14 +59,18 @@ self.addEventListener('activate', event => {
 
 async function networkFirst(request, fallbackUrl) {
   const cache = await caches.open(CACHE_NAME);
+  const controller=new AbortController();const timer=setTimeout(()=>controller.abort(),2500);
   try {
-    const response = await fetch(new Request(request, { cache: 'no-store' }));
+    const remote = await fetch(new Request(request, { cache: 'no-store',signal:controller.signal }));
+    const bytes=await remote.arrayBuffer();
+    const response = new Response([204,205,304].includes(remote.status)?null:bytes, {status:remote.status,statusText:remote.statusText,headers:remote.headers});
     if (response?.ok) {
       cache.put(request, response.clone()).catch(() => {});
     }
     return response;
   } catch {
-    return (await cache.match(request)) || (fallbackUrl ? await cache.match(fallbackUrl) : Response.error());
+    return (await cache.match(request)) || (fallbackUrl ? await cache.match(fallbackUrl) : null) || Response.error();
+  } finally {clearTimeout(timer);
   }
 }
 
@@ -133,7 +144,7 @@ self.addEventListener('fetch', event => {
   }
 
   if (event.request.mode === 'navigate') {
-    event.respondWith(networkFirst(event.request, './index.html'));
+    event.respondWith((async()=>{const cache=await caches.open(CACHE_NAME);return (await cache.match('./index.html')) || networkFirst(event.request,'./index.html');})());
     return;
   }
 
