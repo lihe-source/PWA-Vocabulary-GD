@@ -2718,7 +2718,7 @@ html.is-offline #app { padding-top: calc(env(safe-area-inset-top, 0px) + 30px); 
   .sound-test-wide { grid-column: auto; }
 }
 
-/* ===== V7.4.4 Study streak: unified green theme + mobile layout fix ===== */
+/* ===== V7.4.5 Study streak: unified green theme + mobile layout fix ===== */
 .study-streak-card {
   position: relative;
   overflow: hidden;
@@ -2946,4 +2946,4 @@ html.is-offline #app { padding-top: calc(env(safe-area-inset-top, 0px) + 30px); 
   #enable-reminder-btn { grid-column: auto; }
 }
 
-/* ===== V7.4.4 visual system ===== */
+/* ===== V7.4.5 visual system ===== */

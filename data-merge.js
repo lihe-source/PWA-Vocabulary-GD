@@ -1,4 +1,4 @@
-import { mergeStudyDays } from './study-streak.js?v=V7_4_4';
+import { mergeStudyDays } from './study-streak.js?v=V7_4_5';
 
 export const COLLECTION_STORAGE = Object.freeze({words:'vocabWords',history:'practiceHistory',sentences:'sentenceLog',imported:'importedSentences',boosted:'boostedWords',readingQuizHistory:'readingQuizHistory',essayHistory:'essayHistory',aiAskHistory:'aiAskHistory',studyDays:'studyActivityDays'});
 const stable = value => JSON.stringify(value, (_key, item) => item && typeof item === 'object' && !Array.isArray(item) ? Object.fromEntries(Object.keys(item).sort().map(key => [key,item[key]])) : item);

@@ -112,7 +112,7 @@ html[data-theme="dark"] .essay-stats-row:active,html[data-theme="dark"] .essay-f
   .menu-card-sub { font-size:10px; }
 }
 
-/* V7.4.4: one responsive grid within a full-width route container. */
+/* V7.4.5: one responsive grid within a full-width route container. */
 #view-container { min-height:0;width:100%; }
 #view-container > .view-enter { width:100%;max-width:1440px;margin-inline:auto; }
 #app-topbar { width:100%;gap:16px; }
@@ -200,7 +200,7 @@ html.keyboard-open #view-container { padding-bottom:24px; }
 }
 @media(prefers-reduced-motion:reduce) { *,*::before,*::after { animation-duration:0.01ms !important;transition-duration:0.01ms !important;scroll-behavior:auto !important; } }
 
-/* V7.4.4: compact content without shrinking text or touch targets. */
+/* V7.4.5: compact content without shrinking text or touch targets. */
 .home-welcome { padding-top:14px;padding-bottom:0; }
 .study-streak-card { padding:14px;margin-top:10px; }
 .streak-week { margin-top:10px;padding-top:10px; }
@@ -245,4 +245,53 @@ html.keyboard-open #view-container { padding-bottom:24px; }
 }
 @media(min-width:1200px) {
   #settings-account > .settings-group-body { grid-template-columns:repeat(3,minmax(0,1fr)); }
+}
+
+/* V7.4.5: settings actions share rows; preserve 44px touch targets. */
+.settings-wrap button {
+  min-height:44px;min-width:44px;height:auto;padding:6px 10px;
+  font-size:14px;line-height:1.4;border-radius:10px;
+  white-space:normal;overflow-wrap:anywhere;letter-spacing:normal;
+}
+.settings-wrap button svg { width:18px;height:18px;flex-shrink:0; }
+.settings-wrap .settings-btn-row { gap:8px;margin-top:8px;flex-wrap:wrap; }
+.settings-wrap .settings-btn-row > button { flex:1 1 100px !important; }
+.settings-action-grid { display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:8px; }
+.settings-action-grid > button { width:100%;margin:0;padding:6px 8px;box-shadow:none; }
+.settings-wrap .settings-transfer-actions { margin-top:10px; }
+.settings-wrap .study-streak-sync-row { grid-template-columns:minmax(0,1fr) auto;align-items:center;padding:8px;gap:8px; }
+.settings-wrap .study-streak-sync-row button { width:auto !important;padding:6px 10px; }
+.settings-wrap .sound-test-grid { grid-template-columns:repeat(3,minmax(0,1fr));gap:8px; }
+.settings-wrap .sound-test-wide { grid-column:auto; }
+.settings-wrap .sound-test-card { gap:8px; }
+.settings-wrap .sound-test-status { min-height:0;padding:6px 8px; }
+.settings-wrap .settings-group { margin:8px 0;border-radius:12px; }
+.settings-wrap .settings-group > summary { min-height:44px;padding:8px 12px;font-size:16px; }
+.settings-wrap .settings-collapse-summary { min-height:44px;padding:8px 10px;gap:8px; }
+.settings-wrap .settings-section > .settings-section-label { margin-top:8px !important;margin-bottom:4px; }
+.settings-wrap .settings-section .settings-card { padding:10px; }
+.settings-wrap .settings-tip { margin-top:8px;padding-top:8px; }
+.settings-wrap .one-click-summary-grid { gap:6px;margin-bottom:8px; }
+.settings-wrap .oc-stat-cell { padding:6px 4px; }
+.settings-wrap .version-info-grid { grid-template-columns:repeat(3,minmax(0,1fr));gap:6px; }
+.settings-wrap .version-info-grid > div { padding:8px 4px; }
+.settings-wrap #check-update-btn { display:inline-flex;align-items:center;justify-content:center;width:auto !important;min-width:120px; }
+.settings-wrap .reminder-actions { gap:8px; }
+.settings-wrap .reminder-disable-btn { grid-column:auto; }
+.settings-mobile-jump { display:flex;align-items:center;gap:10px;width:100%;font-size:14px; }
+.settings-mobile-jump > span { flex-shrink:0; }
+.settings-mobile-jump select { flex:1;min-width:0;min-height:44px;border:1px solid var(--border);border-radius:10px;padding:6px 10px;background:var(--card-bg);color:var(--text); }
+.settings-wrap .settings-quick-nav { padding:6px 0; }
+.settings-quick-nav > button { display:none; }
+@media(min-width:760px) {
+  .settings-mobile-jump { display:none; }
+  .settings-quick-nav > button { display:block;flex:0 0 auto; }
+  .settings-wrap .settings-btn-row > button { flex:0 1 auto !important; }
+  .settings-wrap .settings-action-grid { grid-template-columns:repeat(2,minmax(0,1fr));max-width:480px; }
+  .settings-wrap .sound-test-grid { max-width:420px; }
+  .settings-wrap .reminder-actions { grid-template-columns:repeat(3,max-content); }
+}
+@media(max-width:359px) {
+  .settings-wrap .study-streak-sync-row { grid-template-columns:minmax(0,1fr); }
+  .settings-wrap .study-streak-sync-row button { justify-self:start; }
 }

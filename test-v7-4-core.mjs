@@ -10,7 +10,7 @@ const emptyCollections = () => ({
 });
 
 test('V8 validation rejects malformed and future backups before restore', () => {
-  const malformed = BackupSchema.attach(emptyCollections(), { appVersion: 'V7.4.4' });
+  const malformed = BackupSchema.attach(emptyCollections(), { appVersion: 'V7.4.5' });
   malformed.words = null;
   assert.equal(BackupSchema.validate(malformed).reason, 'INVALID_COLLECTION_WORDS');
 

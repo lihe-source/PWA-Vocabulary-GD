@@ -1,4 +1,4 @@
-import {sentenceIdentity} from './data-merge.js?v=V7_4_4';
+import {sentenceIdentity} from './data-merge.js?v=V7_4_5';
 export function createDataStore({AppStorage,getGemini,getStudyStreak,recordStudyActivity,STUDY_ACTIVITY_TYPES,STUDY_DAYS_CSV_HEADER,todayStr}) {
   const StudyStreak=new Proxy({}, {get(_target,key){const value=getStudyStreak()[key];return typeof value==='function'?value.bind(getStudyStreak()):value;}});
   const Gemini=new Proxy({}, {get(_target,key){return getGemini()[key];}});

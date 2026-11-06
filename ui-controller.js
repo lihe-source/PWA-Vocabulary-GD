@@ -78,6 +78,13 @@ export function groupSettings(container, storage) {
   }
   const nav=document.createElement('nav');nav.className='settings-quick-nav';nav.setAttribute('aria-label','設定分類');
   for(const [id,title] of specs){const button=document.createElement('button');button.textContent=title;button.onclick=()=>{const group=groups.get(id).group;group.open=true;group.scrollIntoView({block:'start',behavior:'smooth'});};nav.append(button);}
+  const jump=document.createElement('label');jump.className='settings-mobile-jump';
+  const caption=document.createElement('span');caption.textContent='快速前往';
+  const select=document.createElement('select');select.setAttribute('aria-label','前往設定分類');
+  select.innerHTML='<option value="">選擇設定分類</option>';
+  for(const [id,title] of specs){const option=document.createElement('option');option.value=id;option.textContent=title;select.append(option);}
+  select.onchange=()=>{const target=groups.get(select.value)?.group;if(target){target.open=true;target.scrollIntoView({block:'start',behavior:'smooth'});}select.value='';};
+  jump.append(caption,select);nav.prepend(jump);
   wrap.prepend(nav);for(const [id]of specs)wrap.append(groups.get(id).group);
   wrap.querySelectorAll('.settings-collapsible-card').forEach((group,index)=>{
     const key='settingsDataSection:'+index;group.open=storage.getItem(key)==='open';

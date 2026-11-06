@@ -1,28 +1,28 @@
-import {createDataStore} from './data-store.js?v=V7_4_4';
-import {createGeminiService} from './gemini-service.js?v=V7_4_4';
-import {createDriveService} from './drive-service.js?v=V7_4_4';
-import {RequestCoordinator} from './request-coordinator.js?v=V7_4_4';
-import {createModal,initViewport,groupSettings,decorateControls,loadZip,boundHistory} from './ui-controller.js?v=V7_4_4';
-import { AppStorage } from './storage.js?v=V7_4_4';
-import { BackupSchema } from './backup-schema.js?v=V7_4_4';
-import { VersionManager } from './version-manager.js?v=V7_4_4';
-import { TrendChart } from './chart-renderer.js?v=V7_4_4';
-import { PUSH_CONFIG } from './push-config.js?v=V7_4_4';
-import { ReminderManager, reminderErrorMessage } from './reminder-manager.js?v=V7_4_4';
-import { StudyStreakManager, STUDY_ACTIVITY_TYPES, STUDY_DAYS_CSV_HEADER, mergeStudyDays } from './study-streak.js?v=V7_4_4';
-import { Tasks } from './task-manager.js?v=V7_4_4';
-import { request as netRequest, readableError } from './network.js?v=V7_4_4';
-import { BackupWorker } from './backup-worker-client.js?v=V7_4_4';
-import { DraftManager } from './draft-manager.js?v=V7_4_4';
+import {createDataStore} from './data-store.js?v=V7_4_5';
+import {createGeminiService} from './gemini-service.js?v=V7_4_5';
+import {createDriveService} from './drive-service.js?v=V7_4_5';
+import {RequestCoordinator} from './request-coordinator.js?v=V7_4_5';
+import {createModal,initViewport,groupSettings,decorateControls,loadZip,boundHistory} from './ui-controller.js?v=V7_4_5';
+import { AppStorage } from './storage.js?v=V7_4_5';
+import { BackupSchema } from './backup-schema.js?v=V7_4_5';
+import { VersionManager } from './version-manager.js?v=V7_4_5';
+import { TrendChart } from './chart-renderer.js?v=V7_4_5';
+import { PUSH_CONFIG } from './push-config.js?v=V7_4_5';
+import { ReminderManager, reminderErrorMessage } from './reminder-manager.js?v=V7_4_5';
+import { StudyStreakManager, STUDY_ACTIVITY_TYPES, STUDY_DAYS_CSV_HEADER, mergeStudyDays } from './study-streak.js?v=V7_4_5';
+import { Tasks } from './task-manager.js?v=V7_4_5';
+import { request as netRequest, readableError } from './network.js?v=V7_4_5';
+import { BackupWorker } from './backup-worker-client.js?v=V7_4_5';
+import { DraftManager } from './draft-manager.js?v=V7_4_5';
 
 // ===========================
-// 英文單字複習 PWA - app.js V7_4_4
-// V7.4.4：資料合併修正、模組化、背景處理及跨裝置 UI 改善
+// 英文單字複習 PWA - app.js V7_4_5
+// V7.4.5：資料合併修正、模組化、背景處理及跨裝置 UI 改善
 // ===========================
 
-const APP_VERSION = 'V7_4_4';
-const APP_DISPLAY_VERSION = 'V7.4.4';
-const APP_CACHE_VERSION = 'Voc-PWA-V7_4_4';
+const APP_VERSION = 'V7_4_5';
+const APP_DISPLAY_VERSION = 'V7.4.5';
+const APP_CACHE_VERSION = 'Voc-PWA-V7_4_5';
 const Theme = {
   get() { return AppStorage.getItem('uiTheme') || 'dark'; },
   apply(mode = this.get()) {
@@ -3841,12 +3841,14 @@ Views.settings = {
               </div>
               <button class="btn-secondary" id="gd-streak-sync-btn" type="button">立即同步</button>
             </div>
-            <button class="btn-secondary" id="local-recovery-btn" style="width:100%;margin-top:9px">本機復原點</button>
-            ${remembered ? '<div class="settings-tip" style="margin-top:8px">開啟 APP 後會直接進入主畫面並嘗試無畫面續登入；上傳/還原也不需要先另外按登入。僅在 Google 判定授權已失效時才會顯示官方授權畫面。</div>' : ''}
-            <button class="btn-fb-signout-bottom" id="gd-signout-btn" style="margin-top:10px">
+            <div class="settings-action-grid">
+            <button class="btn-secondary" id="local-recovery-btn" >本機復原點</button>
+            <button class="btn-fb-signout-bottom" id="gd-signout-btn" >
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:15px;height:15px"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
-              登出 Google（${escapeHTML(emailLabel)}）
+              登出 Google
             </button>
+            </div>
+            ${remembered ? '<div class="settings-tip" style="margin-top:8px">開啟 APP 後會直接進入主畫面並嘗試無畫面續登入；上傳/還原也不需要先另外按登入。僅在 Google 判定授權已失效時才會顯示官方授權畫面。</div>' : ''}
           ` : `
             <div class="fb-status-row" style="margin-bottom:8px">
               <div class="fb-status-dot disconnected"></div>
@@ -3907,15 +3909,16 @@ Views.settings = {
               <div class="oc-stat-num" id="settings-streak-total">${streakSummary.totalDays}</div><div class="oc-stat-label">練習天數</div>
             </div>
           </div>
+          <div class="settings-action-grid settings-transfer-actions">
           <button class="btn-one-click-export" id="one-click-export-btn">
             <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" style="width:20px;height:20px"><rect x="2" y="2" width="20" height="20" rx="2" fill="#5b8dd9" stroke="#3a6bc4" stroke-width="1.5"/><rect x="6" y="2" width="12" height="8" rx="1" fill="#a8c4f0" stroke="#3a6bc4" stroke-width="1.2"/><rect x="9" y="3.5" width="4" height="5" rx="0.5" fill="#3a6bc4"/><rect x="4" y="13" width="16" height="7" rx="1" fill="#d6e8ff" stroke="#3a6bc4" stroke-width="1.2"/></svg>
-            一鍵匯出全部資料
+            匯出全部
           </button>
-          <div class="one-click-divider-h"></div>
           <button class="btn-one-click-import" id="one-click-import-btn">
             <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" style="width:20px;height:20px"><path d="M2 7C2 5.9 2.9 5 4 5H10L12 7H20C21.1 7 22 7.9 22 9V18C22 19.1 21.1 20 20 20H4C2.9 20 2 19.1 2 18V7Z" fill="#f5a623" stroke="#d4891a" stroke-width="1.5" stroke-linejoin="round"/><path d="M2 10H22V18C22 19.1 21.1 20 20 20H4C2.9 20 2 19.1 2 18V10Z" fill="#ffc84a" stroke="#d4891a" stroke-width="1.5" stroke-linejoin="round"/></svg>
-            一鍵匯入（CSV / ZIP）
+            匯入 CSV／ZIP
           </button>
+          </div>
           <div class="one-click-import-hint">可選取各類資料 CSV（包含練習天數），或直接選取備份 ZIP 檔一鍵還原</div>
         </div>
 
@@ -4239,9 +4242,9 @@ Views.settings = {
             ${!soundState.supported ? '此瀏覽器不支援 Web Audio API' : soundState.state === 'running' ? '音效已啟用（AudioContext：running）' : '音效尚未啟用，請點擊下方任一測試按鈕'}
           </div>
           <div class="sound-test-grid">
-            <button class="btn-secondary sound-test-btn" id="test-correct-sound-btn" type="button">✓ 答對音效</button>
-            <button class="btn-secondary sound-test-btn" id="test-wrong-sound-btn" type="button">✕ 答錯音效</button>
-            <button class="btn-primary sound-test-btn sound-test-wide" id="test-result-sound-btn" type="button">♫ 總結音效（100%）</button>
+            <button class="btn-secondary sound-test-btn" id="test-correct-sound-btn" type="button" aria-label="試播答對音效">✓ 答對</button>
+            <button class="btn-secondary sound-test-btn" id="test-wrong-sound-btn" type="button" aria-label="試播答錯音效">✕ 答錯</button>
+            <button class="btn-primary sound-test-btn sound-test-wide" id="test-result-sound-btn" type="button" aria-label="試播滿分結算音效">♫ 結算</button>
           </div>
           <div class="settings-tip sound-test-tip">請先將 iPhone 的媒體音量調高，再逐一點擊測試。狀態顯示為 running 但仍聽不到時，請關閉靜音模式後再測試。</div>
         </div>
@@ -4879,7 +4882,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   const bootstrapGDriveInBackground = async () => {
     if (!navigator.onLine || !DB.getGDriveClientId()) return;
     try {
-      // V7.4.4: page startup must never launch Google OAuth UI. Only reuse an
+      // V7.4.5: page startup must never launch Google OAuth UI. Only reuse an
       // access token that is already valid in this PWA session. If the app was
       // fully closed, authorization waits for an explicit cloud action.
       const restored = GDrive.isSignedIn() || GDrive.tryRestoreFromStorage();

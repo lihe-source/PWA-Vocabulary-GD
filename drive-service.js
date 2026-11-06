@@ -1,4 +1,4 @@
-import {COLLECTION_STORAGE} from './data-merge.js?v=V7_4_4';
+import {COLLECTION_STORAGE} from './data-merge.js?v=V7_4_5';
 export function createDriveService({AppStorage,BackupSchema,BackupWorker,StudyStreak,getStudyHistorySources,getOrCreateVocabularyDeviceId,mergeStudyDays,Tasks,netRequest,refreshStudyStreakUI,yieldForUI,DB,APP_DISPLAY_VERSION}) {
 const service = {
   _token: null,
@@ -217,7 +217,7 @@ const service = {
   },
 
   async silentRefresh({ noUi = false } = {}) {
-    // V7.4.4: prompt:'none' is used only for best-effort reconnects that must
+    // V7.4.5: prompt:'none' is used only for best-effort reconnects that must
     // never interrupt the user with Google's account/consent dialog.
     await this._requestToken({
       promptMode: noUi ? 'none' : '',
