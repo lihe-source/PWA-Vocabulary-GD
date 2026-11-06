@@ -42,7 +42,7 @@ test('V7 restores preserve existing study days for legacy migration',()=>{
 });
 test('worker preparation retains Schema V8 checksums and CSV imports commit one batch',async()=>{
   const original=raw({words:[{id:'1',english:'apple',chinese:'蘋果'}]});
-  const prepared=await processBackupJob('prepareRaw',{raw:original,metadata:{appVersion:'V7.4.3'}});
+  const prepared=await processBackupJob('prepareRaw',{raw:original,metadata:{appVersion:'V7.4.4'}});
   assert.equal(BackupSchema.validate(prepared.payload).valid,true);assert.deepEqual(JSON.parse(prepared.json),prepared.payload);
   const header='英文單字,詞性,中文,音標,答錯次數,建立日期,頻率加權';
   const valid=header+'\n"book","n.","書", "",0,2026/10/09,1';

@@ -1,7 +1,7 @@
-import { BackupSchema } from './backup-schema.js?v=V7_4_3';
-import { COLLECTION_STORAGE,parseRawCollections,mergeCollections } from './data-merge.js?v=V7_4_3';
-import { createDataStore } from './data-store.js?v=V7_4_3';
-import { StudyStreakManager,STUDY_ACTIVITY_TYPES,STUDY_DAYS_CSV_HEADER } from './study-streak.js?v=V7_4_3';
+import { BackupSchema } from './backup-schema.js?v=V7_4_4';
+import { COLLECTION_STORAGE,parseRawCollections,mergeCollections } from './data-merge.js?v=V7_4_4';
+import { createDataStore } from './data-store.js?v=V7_4_4';
+import { StudyStreakManager,STUDY_ACTIVITY_TYPES,STUDY_DAYS_CSV_HEADER } from './study-streak.js?v=V7_4_4';
 
 function memoryStore(raw) {
   const values=new Map(Object.entries(raw || {}).map(([name,text])=>[COLLECTION_STORAGE[name]||name,text]));

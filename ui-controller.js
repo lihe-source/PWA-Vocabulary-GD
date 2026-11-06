@@ -60,14 +60,21 @@ export function groupSettings(container, storage) {
     group.addEventListener('toggle',()=>{const key='settingsGroup:'+id,value=group.open?'open':'closed';if(storage.getItem(key)!==value)storage.setItem(key,value);});
     return [id,{group,body}];
   }));
-  let destination='account';
+  let destination='account', section;
   for(const child of [...wrap.children]) {
     if(child.classList.contains('settings-section-label')) {
       const label=child.textContent.trim();
       destination=/版本資訊/.test(label)?'system':/主題|音效/.test(label)?'appearance':/提醒/.test(label)?'notifications':/匯出|資料狀態/.test(label)?'data':'account';
+      section=document.createElement('section');section.className='settings-section';
+      groups.get(destination).body.append(section);
     }
     if(child.tagName==='INPUT'&&child.type==='file')wrap.append(child);
-    else groups.get(destination).body.append(child);
+    else (section||groups.get(destination).body).append(child);
+  }
+  for(const {body} of groups.values()){
+    body.querySelectorAll('.settings-section').forEach(section=>{
+      if(section.querySelector('.settings-collapsible-card'))section.classList.add('settings-section-wide');
+    });
   }
   const nav=document.createElement('nav');nav.className='settings-quick-nav';nav.setAttribute('aria-label','設定分類');
   for(const [id,title] of specs){const button=document.createElement('button');button.textContent=title;button.onclick=()=>{const group=groups.get(id).group;group.open=true;group.scrollIntoView({block:'start',behavior:'smooth'});};nav.append(button);}

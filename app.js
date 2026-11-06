@@ -1,28 +1,28 @@
-import {createDataStore} from './data-store.js?v=V7_4_3';
-import {createGeminiService} from './gemini-service.js?v=V7_4_3';
-import {createDriveService} from './drive-service.js?v=V7_4_3';
-import {RequestCoordinator} from './request-coordinator.js?v=V7_4_3';
-import {createModal,initViewport,groupSettings,decorateControls,loadZip,boundHistory} from './ui-controller.js?v=V7_4_3';
-import { AppStorage } from './storage.js?v=V7_4_3';
-import { BackupSchema } from './backup-schema.js?v=V7_4_3';
-import { VersionManager } from './version-manager.js?v=V7_4_3';
-import { TrendChart } from './chart-renderer.js?v=V7_4_3';
-import { PUSH_CONFIG } from './push-config.js?v=V7_4_3';
-import { ReminderManager, reminderErrorMessage } from './reminder-manager.js?v=V7_4_3';
-import { StudyStreakManager, STUDY_ACTIVITY_TYPES, STUDY_DAYS_CSV_HEADER, mergeStudyDays } from './study-streak.js?v=V7_4_3';
-import { Tasks } from './task-manager.js?v=V7_4_3';
-import { request as netRequest, readableError } from './network.js?v=V7_4_3';
-import { BackupWorker } from './backup-worker-client.js?v=V7_4_3';
-import { DraftManager } from './draft-manager.js?v=V7_4_3';
+import {createDataStore} from './data-store.js?v=V7_4_4';
+import {createGeminiService} from './gemini-service.js?v=V7_4_4';
+import {createDriveService} from './drive-service.js?v=V7_4_4';
+import {RequestCoordinator} from './request-coordinator.js?v=V7_4_4';
+import {createModal,initViewport,groupSettings,decorateControls,loadZip,boundHistory} from './ui-controller.js?v=V7_4_4';
+import { AppStorage } from './storage.js?v=V7_4_4';
+import { BackupSchema } from './backup-schema.js?v=V7_4_4';
+import { VersionManager } from './version-manager.js?v=V7_4_4';
+import { TrendChart } from './chart-renderer.js?v=V7_4_4';
+import { PUSH_CONFIG } from './push-config.js?v=V7_4_4';
+import { ReminderManager, reminderErrorMessage } from './reminder-manager.js?v=V7_4_4';
+import { StudyStreakManager, STUDY_ACTIVITY_TYPES, STUDY_DAYS_CSV_HEADER, mergeStudyDays } from './study-streak.js?v=V7_4_4';
+import { Tasks } from './task-manager.js?v=V7_4_4';
+import { request as netRequest, readableError } from './network.js?v=V7_4_4';
+import { BackupWorker } from './backup-worker-client.js?v=V7_4_4';
+import { DraftManager } from './draft-manager.js?v=V7_4_4';
 
 // ===========================
-// 英文單字複習 PWA - app.js V7_4_3
-// V7.4.3：資料合併修正、模組化、背景處理及跨裝置 UI 改善
+// 英文單字複習 PWA - app.js V7_4_4
+// V7.4.4：資料合併修正、模組化、背景處理及跨裝置 UI 改善
 // ===========================
 
-const APP_VERSION = 'V7_4_3';
-const APP_DISPLAY_VERSION = 'V7.4.3';
-const APP_CACHE_VERSION = 'Voc-PWA-V7_4_3';
+const APP_VERSION = 'V7_4_4';
+const APP_DISPLAY_VERSION = 'V7.4.4';
+const APP_CACHE_VERSION = 'Voc-PWA-V7_4_4';
 const Theme = {
   get() { return AppStorage.getItem('uiTheme') || 'dark'; },
   apply(mode = this.get()) {
@@ -85,6 +85,7 @@ const Sound = {
       // Use the same simple AudioContext construction as V6.6. On iOS standalone
       // PWAs this is more reliable than using latencyHint plus an extra master node.
       this.ctx = new AudioContextClass();
+      this._lastWrongAt = null;
       this.ctx.onstatechange = () => this._emitStatus();
       this.lastError = '';
     }
@@ -208,66 +209,38 @@ const Sound = {
     }
   },
 
+  // Soft sine cues: a short attack avoids clicks; nodes disconnect after playback.
+  _softTone(ctx, frequency, endFrequency, start, duration, volume) {
+    const oscillator=ctx.createOscillator(),gain=ctx.createGain();
+    oscillator.type='sine';oscillator.frequency.setValueAtTime(frequency,start);
+    oscillator.frequency.exponentialRampToValueAtTime(endFrequency,start+duration*0.7);
+    gain.gain.setValueAtTime(0,start);
+    gain.gain.linearRampToValueAtTime(volume,start+0.03);
+    gain.gain.exponentialRampToValueAtTime(0.0001,start+duration-0.02);
+    gain.gain.linearRampToValueAtTime(0,start+duration);
+    oscillator.connect(gain);gain.connect(ctx.destination);
+    oscillator.onended=()=>{oscillator.disconnect();gain.disconnect();};
+    oscillator.start(start);oscillator.stop(start+duration+0.01);
+  },
   playCorrect() {
-    return this._withCtx(ctx => {
-      const o = ctx.createOscillator();
-      const g = ctx.createGain();
-      o.connect(g); g.connect(ctx.destination); o.type = 'sine';
-      o.frequency.setValueAtTime(523, ctx.currentTime);
-      o.frequency.setValueAtTime(659, ctx.currentTime + 0.1);
-      o.frequency.setValueAtTime(784, ctx.currentTime + 0.2);
-      g.gain.setValueAtTime(0.46, ctx.currentTime);
-      g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.5);
-      o.start(ctx.currentTime); o.stop(ctx.currentTime + 0.5);
-    }, '答對音效');
+    return this._withCtx(ctx=>{
+      this._softTone(ctx,440,440,ctx.currentTime,0.22,0.13);
+      this._softTone(ctx,554.37,554.37,ctx.currentTime+0.12,0.24,0.11);
+    },'答對音效');
   },
-
   playWrong() {
-    return this._withCtx(ctx => {
-      const o = ctx.createOscillator();
-      const g = ctx.createGain();
-      o.connect(g); g.connect(ctx.destination); o.type = 'sawtooth';
-      o.frequency.setValueAtTime(200, ctx.currentTime);
-      o.frequency.setValueAtTime(150, ctx.currentTime + 0.1);
-      g.gain.setValueAtTime(0.36, ctx.currentTime);
-      g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.32);
-      o.start(ctx.currentTime); o.stop(ctx.currentTime + 0.33);
-    }, '答錯音效');
+    return this._withCtx(ctx=>{
+      // Prevent closely repeated keyboard events from stacking error sounds.
+      if(this._lastWrongAt!=null&&ctx.currentTime-this._lastWrongAt<0.3)return;
+      this._lastWrongAt=ctx.currentTime;
+      this._softTone(ctx,220,174.61,ctx.currentTime,0.30,0.12);
+    },'答錯音效');
   },
-
-  // pct: 0-100 → tiered result fanfare
   playResult(pct) {
-    return this._withCtx(ctx => {
-      const t = ctx.currentTime;
-      const schedule = (notes, type = 'sine', gain = 0.34, step = 0.11, duration = 0.35) => {
-        notes.forEach((freq, i) => {
-          const o = ctx.createOscillator();
-          const g = ctx.createGain();
-          o.connect(g); g.connect(ctx.destination); o.type = type;
-          o.frequency.value = freq;
-          g.gain.setValueAtTime(0.0001, t + i * step);
-          g.gain.linearRampToValueAtTime(gain, t + i * step + 0.025);
-          g.gain.exponentialRampToValueAtTime(0.001, t + i * step + duration);
-          o.start(t + i * step); o.stop(t + i * step + duration + 0.03);
-        });
-      };
-
-      if (pct === 100) schedule([523, 659, 784, 1047, 1319], 'sine', 0.38, 0.10, 0.40);
-      else if (pct >= 80) schedule([523, 659, 784, 1047], 'sine', 0.36, 0.11, 0.36);
-      else if (pct >= 60) schedule([523, 659, 784], 'sine', 0.34, 0.12, 0.34);
-      else if (pct >= 40) schedule([440, 523], 'triangle', 0.32, 0.15, 0.34);
-      else if (pct >= 20) schedule([392, 330], 'triangle', 0.30, 0.18, 0.38);
-      else {
-        const o = ctx.createOscillator();
-        const g = ctx.createGain();
-        o.connect(g); g.connect(ctx.destination); o.type = 'sawtooth';
-        o.frequency.setValueAtTime(280, t);
-        o.frequency.linearRampToValueAtTime(180, t + 0.4);
-        g.gain.setValueAtTime(0.34, t);
-        g.gain.exponentialRampToValueAtTime(0.001, t + 0.52);
-        o.start(t); o.stop(t + 0.55);
-      }
-    }, `總結音效 ${Math.round(Number(pct) || 0)}%`);
+    return this._withCtx(ctx=>{
+      const notes=pct===100?[392,493.88,587.33,783.99]:pct>=80?[392,493.88,587.33]:pct>=60?[349.23,440,523.25]:pct>=40?[329.63,392]:pct>=20?[293.66,261.63]:[261.63,220];
+      notes.forEach((frequency,index)=>this._softTone(ctx,frequency,frequency,ctx.currentTime+index*0.16,0.30,0.11));
+    },'結算音效');
   }
 };
 
@@ -4906,7 +4879,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   const bootstrapGDriveInBackground = async () => {
     if (!navigator.onLine || !DB.getGDriveClientId()) return;
     try {
-      // V7.4.3: page startup must never launch Google OAuth UI. Only reuse an
+      // V7.4.4: page startup must never launch Google OAuth UI. Only reuse an
       // access token that is already valid in this PWA session. If the app was
       // fully closed, authorization waits for an explicit cloud action.
       const restored = GDrive.isSignedIn() || GDrive.tryRestoreFromStorage();

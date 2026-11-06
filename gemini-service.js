@@ -1,4 +1,4 @@
-import {fetchJSON} from './request-coordinator.js?v=V7_4_3';
+import {fetchJSON} from './request-coordinator.js?v=V7_4_4';
 export function createGeminiService({DB,escapeRegex,requests}) {
 const service = {
   // All selectable models (display name -> API id)
